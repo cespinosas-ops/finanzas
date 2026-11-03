@@ -134,13 +134,15 @@ function seedCats() {
   }
 }
 function seedCuentas() {
-  save("cuentas", { id: "bch_cc", nombre: "Cuenta corriente", banco: "bch", tipo: "corriente", orden: 0 });
-  save("cuentas", { id: "bch_tc", nombre: "Tarjeta de crédito", banco: "bch", tipo: "credito", orden: 1 });
-  save("cuentas", { id: "bice", nombre: "BICE", banco: "bice", tipo: "corriente", orden: 2 });
+  save("cuentas", { id: "bch_vista", nombre: "Cuenta vista", banco: "bch", tipo: "vista", orden: 0 });
+  save("cuentas", { id: "bice", nombre: "Cuenta corriente", banco: "bice", tipo: "corriente", orden: 1 });
+  save("cuentas", { id: "bice_tc", nombre: "Visa Banca Joven", banco: "bice", tipo: "credito", orden: 2 });
   save("cuentas", { id: "mp", nombre: "Mercado Pago", banco: "mp", tipo: "billetera", orden: 3 });
+  save("cuentas", { id: "fintual", nombre: "Fintual", banco: "", tipo: "inversion", moneda: "USD", orden: 4 });
 }
 function seedMeta() { save("metas", { id: "guatemala", nombre: "Viaje a Guatemala", fecha: "2027-02-01", objetivo: null, aportes: [], activa: true }); }
 const BANCO = { bch: "Banco de Chile", bice: "BICE", mp: "Mercado Pago" };
+const TIPOS = [["corriente", "Cuenta corriente"], ["vista", "Cuenta vista"], ["credito", "Tarjeta de crédito"], ["billetera", "Billetera"], ["ahorro", "Ahorro"], ["inversion", "Inversión"]];
 
 /* ============ Categorías ============ */
 const catsOrden = (list) => list.sort((a, b) => (a.orden ?? 99) - (b.orden ?? 99) || a.nombre.localeCompare(b.nombre));
@@ -162,6 +164,13 @@ function catOptions(sel, tipo) {
 /* ============ Movimientos ============ */
 const usd = () => +S.aj.usd || 950;
 const clp = (m, monto) => { const v = monto == null ? m.monto : monto; return m.moneda === "USD" ? v * usd() : v; };
+function fmtMon(v, mon) { if (mon === "USD") return "US$" + (+v || 0).toLocaleString("es-CL", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); return fmt(v); }
+const saldoCLP = (c) => (c.saldo == null ? 0 : c.moneda === "USD" ? c.saldo * usd() : +c.saldo);
+function setSaldo(c, saldo, fecha) {
+  c.saldo = saldo; c.saldo_fecha = fecha;
+  const h = (c.hist || []).filter((x) => x.f !== fecha); h.push({ f: fecha, s: saldo });
+  c.hist = h.sort((a, b) => (a.f < b.f ? -1 : 1)).slice(-400);
+}
 const cuenta = (id) => S.cuentas[id] || { nombre: "Sin cuenta", tipo: "corriente" };
 const cuentaLabel = (id) => { const c = S.cuentas[id]; return c ? (c.banco && BANCO[c.banco] && !c.nombre.includes(BANCO[c.banco]) ? BANCO[c.banco] + " " + c.nombre.toLowerCase() : c.nombre) : "Sin cuenta"; };
 const nombreMov = (m) => m.nombre || L.limpiarGlosa(m.glosa || "");
@@ -236,12 +245,12 @@ function tcInfo(id) {
   } else if (est) { ult = est.fecha_cierre; prev = addD(ult, -30); prox = addD(ult, 30); }
   else { ult = addD(hoy, -30); prev = addD(hoy, -60); prox = hoy; }
   const vencDe = (cierre) => { if (!c || !c.dia_venc) return null; const same = dateWithDay(ymOf(cierre), +c.dia_venc); return same > cierre ? same : dateWithDay(addM(ymOf(cierre), 1), +c.dia_venc); };
-  const noFactList = movs.filter((m) => compra(m) && m.fecha > ult).sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+  const noFactList = movs.filter((m) => compra(m) && (m.fecha > ult || (m.fecha === ult && m.fecha_compra && m.fecha_compra < ult))).sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
   const noFact = noFactList.reduce((s, m) => s - clp(m), 0);
   const pagos = movs.filter((m) => pago(m) && m.fecha > ult).reduce((s, m) => s + clp(m), 0);
   let fact, minimo = null, venc, estimado = false;
   if (est && est.fecha_cierre >= addD(ult, -6)) { fact = +est.total || 0; minimo = est.minimo != null ? +est.minimo : null; venc = est.fecha_venc || vencDe(est.fecha_cierre); }
-  else { fact = movs.filter((m) => compra(m) && m.fecha > prev && m.fecha <= ult).reduce((s, m) => s - clp(m), 0); venc = vencDe(ult); estimado = true; }
+  else { fact = movs.filter((m) => compra(m) && m.fecha > prev && m.fecha <= ult && !(m.fecha === ult && m.fecha_compra && m.fecha_compra < ult)).reduce((s, m) => s - clp(m), 0); venc = vencDe(ult); estimado = true; }
   const porPagar = Math.max(0, fact - pagos);
   const cuotas = cuotasFuturas(id);
   const cuotasPend = cuotas.series.reduce((s, x) => s + x.queda * x.valor, 0);
@@ -257,7 +266,7 @@ function cuotasFuturas(id) {
   const series = {};
   for (const m of movsList()) {
     if (m.cuenta_id !== id || !m.cuotas || !m.cuotas.de || m.estado === "ignorado") continue;
-    const base = L.patronDe((m.glosa || "").replace(/\b\d{1,2}\s*\/\s*\d{1,2}\b|CUOTA\s*\d+\s*DE\s*\d+/gi, ""));
+    const base = L.norm(L.limpiarGlosa(m.glosa || ""));
     const k = base + "|" + m.cuotas.de + "|" + Math.round(Math.abs(m.monto));
     if (!series[k] || series[k].n < m.cuotas.n) series[k] = { nombre: nombreMov(m), n: m.cuotas.n, de: m.cuotas.de, valor: Math.abs(clp(m)), ym: ymOf(m.fecha) };
   }
@@ -366,7 +375,7 @@ function viewMes() {
   const cs = Object.values(S.cuentas).filter((c) => !c.archivada).sort((a, b) => (a.orden ?? 9) - (b.orden ?? 9));
   h += `<section class="card"><div class="cardhead"><h2>Cuentas</h2><button class="linkbtn" data-act="sub" data-sub="cuentas">Editar saldos</button></div><div class="list">${cs.map((c) => {
     if (c.tipo === "credito") { const i = tcInfo(c.id); return `<button class="li" data-act="tab" data-tab="tarjeta"><span class="t"><div>${esc(cuentaLabel(c.id))}</div><div class="tiny muted">deuda${i.estimado ? " estimada" : ""}, por pagar ${fmt(i.porPagar)}</div></span><span class="num bad">${fmt(i.porPagar + i.noFact)}</span></button>`; }
-    return `<div class="li"><span class="t"><div>${esc(cuentaLabel(c.id))}</div><div class="tiny muted">${c.saldo_fecha ? "al " + fechaCorta(c.saldo_fecha) : "sin saldo todavía"}</div></span><span class="num">${c.saldo != null ? fmt(c.saldo) : "?"}</span></div>`;
+    return `<button class="li" data-act="editCuenta" data-id="${c.id}"><span class="t"><div>${esc(cuentaLabel(c.id))}</div><div class="tiny muted">${c.saldo_fecha ? "al " + fechaCorta(c.saldo_fecha) : "sin saldo todavía"}${c.saldo < 0 && c.linea ? " · usando sobregiro" : ""}</div></span><span class="num ${c.saldo < 0 ? "bad" : ""}">${c.saldo != null ? (c.saldo < 0 ? "debes " : "") + fmtMon(c.saldo, c.moneda) : "?"}</span></button>`;
   }).join("")}</div></section>`;
   // Por categoría
   const rs = roots("gasto").map((r) => ({ r, v: t.porRoot[r.id] || 0 })).filter((x) => x.v > 0 || x.r.presupuesto).sort((a, b) => b.v - a.v);
@@ -496,6 +505,7 @@ function viewTarjeta() {
     <div class="row between"><div><div class="eyebrow">Total a pagar${i.estimado ? " (estimado)" : ""}</div><div class="big">${fmt(i.fact)}</div></div><div style="text-align:right"><div class="eyebrow">Vence</div><div class="num">${i.venc ? fechaCorta(i.venc) : "?"}</div>${dv != null && dv >= 0 ? `<div class="tiny ${dv <= 3 ? "bad" : "muted"}">${dv === 0 ? "hoy" : "en " + dv + " días"}</div>` : ""}</div></div>
     <div class="kpis"><div class="kpi"><span class="tiny muted">Mínimo</span><b>${i.minimo != null ? fmt(i.minimo) : "?"}</b></div><div class="kpi"><span class="tiny muted">Ya pagaste</span><b class="in">${fmt(i.pagos)}</b></div><div class="kpi"><span class="tiny muted">Falta</span><b>${fmt(i.porPagar)}</b></div></div>
     ${i.interesMin != null ? `<div class="banner"><div>Si pagas solo el mínimo, te cobran cerca de <b>${fmt(i.interesMin)}</b> de intereses el próximo mes (tasa ${String(i.tasa).replace(".", ",")}% mensual), y siguen corriendo sobre lo que quede.</div></div>` : `<p class="tiny muted">${i.minimo == null ? "Con el monto mínimo y la tasa del estado de cuenta te calculo cuánto costaría pagar solo el mínimo." : "Falta la tasa de interés rotativo para calcular lo que costaría pagar solo el mínimo."}</p>`}
+    ${c.pago_auto === "minimo" && i.minimo !== 0 && i.porPagar > 0 ? `<div class="banner" style="background:var(--bad-soft)"><div>Tienes el <b>pago automático en monto mínimo</b>. Si no pagas el resto a mano antes del ${i.venc ? fechaCorta(i.venc) : "vencimiento"}, la diferencia queda como deuda y empieza a cobrar intereses, aunque las compras hayan sido en cuotas sin interés.</div></div>` : ""}
     <p class="tiny muted">Periodo cerrado el ${fechaCorta(i.ult)}${i.prox ? ", el próximo cierre es el " + fechaCorta(i.prox) : ""}.</p></section>`;
   // No facturado
   h += `<section class="card"><div class="cardhead"><h2>No facturado</h2><span class="num">${fmt(i.noFact)}</span></div><p class="tiny muted">Compras desde el ${fechaCorta(addD(i.ult, 1))}. Entran al próximo estado de cuenta.</p><div class="list">${i.noFactList.slice(0, 8).map((m) => movLi(m)).join("") || `<p class="empty">Sin compras desde el último cierre.</p>`}</div>${i.noFactList.length > 8 ? `<p class="tiny muted">y ${i.noFactList.length - 8} más</p>` : ""}</section>`;
@@ -586,7 +596,7 @@ function viewReglas() {
 }
 function viewCuentas() {
   const cs = Object.values(S.cuentas).sort((a, b) => (a.orden ?? 9) - (b.orden ?? 9));
-  return back() + `<section class="card"><div class="list">${cs.map((c) => `<button class="li" data-act="editCuenta" data-id="${c.id}"><span class="t"><div>${esc(cuentaLabel(c.id))}</div><div class="tiny muted">${{ corriente: "Cuenta corriente", vista: "Cuenta vista", credito: "Tarjeta de crédito", billetera: "Billetera", ahorro: "Ahorro" }[c.tipo] || c.tipo}${c.tipo === "credito" ? (c.dia_cierre ? ` · cierra el ${c.dia_cierre}, vence el ${c.dia_venc}` : " · falta configurar") : c.saldo != null ? " · " + fmt(c.saldo) : ""}</div></span>${chev}</button>`).join("")}</div><button class="btn" data-act="nuevaCuenta">Agregar cuenta</button></section>`;
+  return back() + `<section class="card"><div class="list">${cs.map((c) => `<button class="li" data-act="editCuenta" data-id="${c.id}"><span class="t"><div>${esc(cuentaLabel(c.id))}</div><div class="tiny muted">${(TIPOS.find((t) => t[0] === c.tipo) || [0, c.tipo])[1]}${c.tipo === "credito" ? (c.dia_cierre ? ` · cierra el ${c.dia_cierre}, vence el ${c.dia_venc}` : " · falta configurar") : c.saldo != null ? " · " + fmtMon(c.saldo, c.moneda) : ""}</div></span>${chev}</button>`).join("")}</div><button class="btn" data-act="nuevaCuenta">Agregar cuenta</button></section>`;
 }
 function viewAtajos() {
   const url = FN_INGEST;
@@ -594,11 +604,232 @@ function viewAtajos() {
     <p class="small muted">Los Atajos mandan las compras directo a tu Supabase con una clave. Aquí solo se guarda una huella de la clave, así que si la pierdes creas otra.</p>
     ${S.clave ? `<div class="code" id="claveTxt">${esc(S.clave)}</div><div class="btns"><button class="btn" data-act="copiar" data-txt="${esc(S.clave)}">Copiar clave</button><button class="btn" data-act="probarAtajo">Probar</button></div><p class="tiny warn">Cópiala ahora en los Atajos. Cuando cierres la app ya no la vuelvo a mostrar.</p>` : `<button class="btn primary" data-act="crearClave">${S.aj.claveCreada ? "Crear una clave nueva" : "Crear clave"}</button>${S.aj.claveCreada ? `<p class="tiny muted">Ya tienes una creada. Si creas otra, la anterior deja de funcionar.</p>` : ""}`}
   </section>
-  <section class="card"><h2>1. Compras de Wallet</h2><p class="small muted">Se activa cuando pagas con Apple Pay en el iPhone o el Watch. Con la tarjeta física normalmente no se activa: esas compras entran por cartola.</p>
+  <section class="card"><h2>1. Compras de Wallet</h2>
+    <label class="f">Si no reconozco la tarjeta, la compra va a<select data-ch="ajTxt" data-k="walletCuenta">${Object.values(S.cuentas).filter((c) => !c.archivada).map((c) => `<option value="${c.id}"${(S.aj.walletCuenta || "bch_vista") === c.id ? " selected" : ""}>${esc(cuentaLabel(c.id))}</option>`).join("")}</select></label><p class="small muted">Se activa cuando pagas con Apple Pay en el iPhone o el Watch. Con la tarjeta física normalmente no se activa: esas compras entran por cartola.</p>
     <ol class="steps"><li>Abre Atajos, pestaña Automatización, toca + y elige <b>Transacción</b>.</li><li>Elige tus tarjetas, deja "Al tocar" y marca <b>Ejecutar inmediatamente</b>.</li><li>Agrega la acción <b>Obtener contenido de URL</b> con esta URL:<div class="code" style="margin-top:6px">${url}</div></li><li>Método <b>POST</b>. En Encabezados agrega <b>x-clave</b> con tu clave.</li><li>En Cuerpo de solicitud elige <b>JSON</b> y agrega: <b>tipo</b> = wallet, <b>monto</b> = Importe, <b>comercio</b> = Comercio, <b>tarjeta</b> = Tarjeta o pase (variables de la Transacción).</li></ol>
     <button class="btn sm" data-act="copiar" data-txt="${url}">Copiar URL</button></section>
   <section class="card"><h2>2. Capturas sin abrir la app</h2>
     <ol class="steps"><li>Crea un Atajo nuevo y en sus detalles activa <b>Mostrar en hoja de compartir</b> para Imágenes.</li><li>Acción <b>Extraer texto de</b> la Entrada del atajo (usa el lector del iPhone, gratis).</li><li>Acción <b>Obtener contenido de URL</b>, misma URL y clave de arriba, JSON con <b>tipo</b> = captura y <b>texto</b> = Texto.</li><li>Desde Fotos comparte la captura con ese Atajo. Te aparece para revisar en Importar.</li></ol></section>`;
+}
+
+/* ============ Análisis ============ */
+const DOW = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+const dowOf = (s) => (toDate(s).getDay() + 6) % 7;
+const lunes = (s) => addD(s, -dowOf(s));
+// Cada parte de gasto activa, con su fecha, en un rango
+function gastosEn(desde, hasta) {
+  const out = [];
+  for (const m of movsList()) {
+    if (!activo(m) || !m.fecha || m.fecha < desde || m.fecha > hasta) continue;
+    for (const p of partes(m)) if (tipoParte(p, m) === "gasto") out.push({ f: m.fecha, v: -p.monto, cat: p.cat, m });
+  }
+  return out;
+}
+function ingresosEn(desde, hasta) {
+  const out = [];
+  for (const m of movsList()) {
+    if (!activo(m) || !m.fecha || m.fecha < desde || m.fecha > hasta) continue;
+    for (const p of partes(m)) if (tipoParte(p, m) === "ingreso") out.push({ f: m.fecha, v: p.monto, cat: p.cat, m });
+  }
+  return out;
+}
+const sum = (a) => a.reduce((s, x) => s + x.v, 0);
+const finMes = (ym) => dateWithDay(ym, 31);
+function primerDato() { let d = null; for (const m of movsList()) if (activo(m) && m.fecha && (!d || m.fecha < d)) d = m.fecha; return d; }
+const kpi = (t, v, cls, sub) => `<div class="kpi"><span class="tiny muted">${t}</span><b class="${cls || ""}">${v}</b>${sub ? `<span class="tiny muted">${sub}</span>` : ""}</div>`;
+const insight = (txt) => `<div class="li" style="align-items:flex-start"><span class="dot" style="background:var(--accent);margin-top:7px"></span><span class="t small" style="white-space:normal">${txt}</span></div>`;
+
+function viewAnalisis() {
+  const tabs = [["resumen", "Resumen"], ["historial", "Historial"], ["ciclos", "Ciclos"], ["comparar", "Comparar"], ["patrimonio", "Patrimonio"]];
+  const sel = S.an || "resumen";
+  let h = `<div class="seg" style="overflow-x:auto">${tabs.map(([k, v]) => `<button data-act="an" data-k="${k}" aria-pressed="${sel === k}">${v}</button>`).join("")}</div>`;
+  if (!primerDato() && sel !== "patrimonio") return h + `<section class="card"><p class="empty">Cuando importes tus primeras cartolas aquí aparecen tus números.</p></section>`;
+  return h + ({ resumen: anResumen, historial: anHistorial, ciclos: anCiclos, comparar: anComparar, patrimonio: anPatrimonio }[sel] || anResumen)();
+}
+
+function anResumen() {
+  const ym = S.mes, actual = ym === ymOf(today()), y = +ym.slice(0, 4), mo = +ym.slice(5);
+  const dias = actual ? +today().slice(8) : lastDay(y, mo), total = lastDay(y, mo);
+  const g = gastosEn(ym + "-01", finMes(ym)), t = totales(ym);
+  const diario = sum(g) / dias;
+  const compras = movsMes(ym).filter((m) => activo(m) && m.monto < 0);
+  const hormiga = compras.filter((m) => -clp(m) < 5000);
+  const fijos = cobrosFijos().reduce((s, f) => s + f.monto, 0);
+  const conGasto = new Set(g.map((x) => x.f));
+  let sinGasto = 0; for (let d = 1; d <= dias; d++) if (!conGasto.has(`${ym}-${pad(d)}`)) sinGasto++;
+  const prev = addM(ym, -1), hastaPrev = dateWithDay(prev, dias);
+  const gPrev = sum(gastosEn(prev + "-01", hastaPrev));
+  const ahorro = t.ingreso ? t.neto / t.ingreso : null;
+  // Proyección: lo que llevas más tu gasto diario típico de los últimos 60 días por los días que quedan
+  const base60 = sum(gastosEn(addD(ym + "-01", -60), addD(ym + "-01", -1))) / 60;
+  const proy = sum(g) + (total - dias) * (base60 || diario);
+  let h = monthNav();
+  h += `<section class="card"><h2>Métricas de ${MES[mo - 1]}</h2><div class="kpis" style="grid-template-columns:1fr 1fr">
+    ${kpi("Gasto por día", fmt(diario), "", `en ${dias} días`)}
+    ${actual ? kpi("Proyección del mes", fmt(proy), proy > presTotal() && presTotal() ? "bad" : "", presTotal() ? "presupuesto " + fmtK(presTotal()) : "a tu ritmo normal") : kpi("Total del mes", fmt(t.gasto))}
+    ${kpi("Tasa de ahorro", ahorro == null ? "sin ingresos" : Math.round(ahorro * 100) + "%", ahorro != null && ahorro < 0 ? "bad" : "in", "de lo que entró")}
+    ${kpi("Compras", compras.length, "", `ticket promedio ${fmt(compras.length ? sum(compras.map((m) => ({ v: -clp(m) }))) / compras.length : 0)}`)}
+    ${kpi("Gasto hormiga", fmt(sum(hormiga.map((m) => ({ v: -clp(m) })))), "", `${hormiga.length} compras bajo $5.000`)}
+    ${kpi("Días sin gastar", sinGasto, "", `de ${dias}`)}
+  </div></section>`;
+  const ins = [];
+  if (gPrev > 0) { const d = sum(g) - gPrev; ins.push(`A esta altura de ${MES[+prev.slice(5) - 1]} llevabas ${fmt(gPrev)}. Ahora vas ${d >= 0 ? fmt(d) + " más arriba" : fmt(d) + " más abajo"} (${Math.round(Math.abs(d) / gPrev * 100)}%).`); }
+  if (fijos && t.gasto) ins.push(`Tus cobros fijos son ${fmt(fijos)} al mes, el ${pct(fijos, Math.max(t.gasto, fijos))}% de lo que llevas gastado.`);
+  const top = Object.entries(t.porSub).sort((a, b) => b[1] - a[1])[0];
+  if (top) ins.push(`Donde más se te fue: ${esc(catName(top[0], true))} con ${fmt(top[1])}.`);
+  const lug = {}; g.forEach((x) => { const k = nombreMov(x.m); lug[k] = (lug[k] || 0) + x.v; });
+  const tl = Object.entries(lug).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  h += ins.length ? `<section class="card"><h2>En corto</h2><div class="list">${ins.map(insight).join("")}</div></section>` : "";
+  h += tl.length ? `<section class="card"><h2>Top lugares del mes</h2><div class="list">${tl.map(([k, v], i) => `<div class="li"><span class="num muted small">${i + 1}</span><span class="t"><div>${esc(k)}</div></span><span class="num">${fmt(v)}</span></div>`).join("")}</div></section>` : "";
+  return h;
+}
+
+function periodos(modo, n) {
+  const out = [], hoy = today();
+  if (modo === "semana") {
+    let ini = lunes(hoy);
+    for (let i = n - 1; i >= 0; i--) { const a = addD(ini, -7 * i), b = addD(a, 6); out.push({ a, b, l: fechaCorta(a), largo: `Semana del ${fechaCorta(a)}` }); }
+  } else {
+    for (let i = n - 1; i >= 0; i--) { const ym = addM(ymOf(hoy), -i); out.push({ a: ym + "-01", b: finMes(ym), l: mesCorto(ym), largo: mesLabel(ym), ym }); }
+  }
+  return out.map((p) => { const g = sum(gastosEn(p.a, p.b)), i = sum(ingresosEn(p.a, p.b)); return Object.assign(p, { g, i, n: i - g }); });
+}
+function anHistorial() {
+  const modo = S.anPer || "mes";
+  const ps = periodos(modo, 12);
+  const d0 = primerDato(); const conDatos = ps.filter((p) => p.b >= d0);
+  const prom = (k, arr) => (arr.length ? arr.reduce((s, p) => s + p[k], 0) / arr.length : 0);
+  const cerrados = conDatos.filter((p) => p.b < today());
+  const mayor = conDatos.slice().sort((a, b) => b.g - a.g)[0], menor = cerrados.slice().sort((a, b) => a.g - b.g)[0];
+  let h = `<div class="seg"><button data-act="anPer" data-k="mes" aria-pressed="${modo === "mes"}">Por mes</button><button data-act="anPer" data-k="semana" aria-pressed="${modo === "semana"}">Por semana</button></div>`;
+  h += `<section class="card"><div class="cardhead"><h2>${modo === "mes" ? "Últimos 12 meses" : "Últimas 12 semanas"}</h2><span class="tiny muted"><span style="color:var(--accent)">■</span> entró <span style="color:var(--bad)">■</span> salió</span></div>${barsSVG(ps.map((p, k) => ({ l: modo === "mes" ? p.l : String(+p.a.slice(8)), a: p.i, b: p.g, hl: k === ps.length - 1 })), { label: "Historial" })}
+    <div class="kpis">${kpi("Gasto promedio", fmt(prom("g", cerrados.length ? cerrados : conDatos)))}${kpi("Mayor", mayor ? fmtK(mayor.g) : "", "bad", mayor ? mayor.l : "")}${kpi("Menor", menor ? fmtK(menor.g) : "", "in", menor ? menor.l : "")}</div></section>`;
+  h += `<section class="card"><table class="tbl"><tr class="tiny muted"><td>${modo === "mes" ? "Mes" : "Semana"}</td><td class="r">Entró</td><td class="r">Salió</td><td class="r">Neto</td><td class="r">Ahorro</td></tr>${conDatos.slice().reverse().map((p) => `<tr${p.ym ? ` data-act="irMes" data-ym="${p.ym}" style="cursor:pointer"` : ""}><td>${esc(modo === "mes" ? p.largo : p.l)}</td><td class="r num in">${fmtK(p.i)}</td><td class="r num">${fmtK(p.g)}</td><td class="r num ${p.n < 0 ? "bad" : ""}">${p.n < 0 ? "faltó " : ""}${fmtK(p.n)}</td><td class="r num">${p.i ? Math.round((p.n / p.i) * 100) + "%" : ""}</td></tr>`).join("")}</table></section>`;
+  // Por categoría a lo largo del tiempo
+  if (modo === "mes") {
+    const rs = roots("gasto").map((r) => ({ r, vals: ps.map((p) => { let v = 0; gastosEn(p.a, p.b).forEach((x) => { if (x.cat && rootOf(x.cat) === r.id) v += x.v; }); return v; }) })).filter((x) => x.vals.some((v) => v > 0));
+    h += `<section class="card"><h2>Cada categoría mes a mes</h2><div class="list">${rs.map(({ r, vals }) => { const mx = Math.max(...vals, 1); const last3 = vals.slice(-4, -1).filter((v) => v > 0); const avg = last3.length ? last3.reduce((a, b) => a + b, 0) / last3.length : 0; return `<button class="li" data-act="drill" data-path="${r.id}" style="flex-wrap:wrap"><span class="dot" style="background:${r.color}"></span><span class="t"><div>${esc(r.nombre)}</div><div class="tiny muted">promedio ${fmt(avg)} en los 3 meses anteriores</div></span><svg width="96" height="28" viewBox="0 0 96 28">${vals.map((v, i) => `<rect x="${i * 8}" y="${28 - Math.max(v ? 2 : 0, 26 * v / mx)}" width="6" height="${Math.max(v ? 2 : 0, 26 * v / mx)}" rx="1.5" fill="${i === vals.length - 1 ? r.color : "var(--line)"}"/>`).join("")}</svg></button>`; }).join("")}</div></section>`;
+  }
+  return h;
+}
+
+function anCiclos() {
+  const hoy = today(), desde = addM(ymOf(hoy), -6) + "-01";
+  const ini = primerDato() > desde ? primerDato() : desde;
+  const g = gastosEn(ini, hoy), ing = ingresosEn(ini, hoy);
+  const ndias = dayDiff(ini, hoy) + 1;
+  if (ndias < 14 || !g.length) return `<section class="card"><p class="empty">Necesito al menos un par de semanas de datos para ver tus ciclos. Importa más cartolas y vuelve.</p></section>`;
+  // Por día de la semana: promedio por cada ocurrencia del día
+  const dowSum = Array(7).fill(0), dowN = Array(7).fill(0), dowCat = Array.from({ length: 7 }, () => ({}));
+  for (let k = 0; k < ndias; k++) dowN[dowOf(addD(ini, k))]++;
+  g.forEach((x) => { const d = dowOf(x.f); dowSum[d] += x.v; if (x.cat) dowCat[d][x.cat] = (dowCat[d][x.cat] || 0) + x.v; });
+  const dowAvg = dowSum.map((s, i) => (dowN[i] ? s / dowN[i] : 0));
+  const finde = (dowSum[5] + dowSum[6]) / Math.max(1, dowN[5] + dowN[6]), semana = dowSum.slice(0, 5).reduce((a, b) => a + b, 0) / Math.max(1, dowN.slice(0, 5).reduce((a, b) => a + b, 0));
+  // Por día del mes
+  const domSum = Array(32).fill(0), domN = Array(32).fill(0);
+  for (let k = 0; k < ndias; k++) domN[+addD(ini, k).slice(8)]++;
+  g.forEach((x) => (domSum[+x.f.slice(8)] += x.v));
+  const domAvg = domSum.map((s, i) => (domN[i] ? s / domN[i] : 0));
+  const tramo = (a, b) => { let s = 0, n = 0; for (let d = a; d <= b; d++) { s += domSum[d]; n += domN[d]; } return n ? s / n : 0; };
+  const tramos = [["Del 1 al 10", tramo(1, 10)], ["Del 11 al 20", tramo(11, 20)], ["Del 21 a fin de mes", tramo(21, 31)]];
+  // Cuándo entra la plata
+  const grandes = ing.filter((x) => x.v >= 50000);
+  const diasIng = grandes.map((x) => +x.f.slice(8)).sort((a, b) => a - b);
+  const diaPago = diasIng.length ? diasIng[Math.floor(diasIng.length / 2)] : null;
+  let post = null;
+  if (diaPago) { let s1 = 0, n1 = 0, s2 = 0, n2 = 0; for (let d = 1; d <= 31; d++) { const dist = (d - diaPago + 31) % 31; if (dist < 7) { s1 += domSum[d]; n1 += domN[d]; } else { s2 += domSum[d]; n2 += domN[d]; } } post = { a: n1 ? s1 / n1 : 0, b: n2 ? s2 / n2 : 0 }; }
+  // Horario (solo compras de Wallet traen hora)
+  const conHora = g.filter((x) => x.m.hora != null);
+  const franjas = [["Mañana", 5, 12], ["Tarde", 12, 19], ["Noche", 19, 24], ["Madrugada", 0, 5]].map(([l, a, b]) => ({ l, a: sum(conHora.filter((x) => x.m.hora >= a && x.m.hora < b)) }));
+  // Frases
+  const ins = [];
+  const mx = dowAvg.indexOf(Math.max(...dowAvg)), mn = dowAvg.indexOf(Math.min(...dowAvg));
+  ins.push(`El día que más gastas es el <b>${DOW[mx].toLowerCase()}</b> (${fmt(dowAvg[mx])} en promedio) y el que menos el ${DOW[mn].toLowerCase()} (${fmt(dowAvg[mn])}).`);
+  if (semana > 0) ins.push(`Un día de fin de semana te cuesta ${fmt(finde)} y uno de semana ${fmt(semana)}: ${finde >= semana ? Math.round((finde / semana - 1) * 100) + "% más el finde" : Math.round((1 - finde / semana) * 100) + "% menos el finde"}.`);
+  const tMax = tramos.slice().sort((a, b) => b[1] - a[1])[0]; ins.push(`Por día, gastas más ${tMax[0].toLowerCase()} del mes (${fmt(tMax[1])} diarios).`);
+  if (diaPago && post && post.b) ins.push(`La plata grande te suele entrar cerca del día ${diaPago}. En la semana siguiente gastas ${fmt(post.a)} al día, versus ${fmt(post.b)} el resto del mes${post.a > post.b * 1.2 ? ": se nota el efecto sueldo" : ""}.`);
+  // Lo que distingue a cada día: la categoría que pesa más ese día comparado con tu promedio
+  const totG = sum(g), catTot = {}; g.forEach((x) => { if (x.cat) catTot[x.cat] = (catTot[x.cat] || 0) + x.v; });
+  const catTop = dowCat.map((o, i) => Object.entries(o).filter(([c, v]) => dowSum[i] && v / dowSum[i] >= 0.1).map(([c, v]) => [c, (v / dowSum[i]) / (catTot[c] / totG)]).sort((a, b) => b[1] - a[1])[0]);
+  let h = `<p class="small muted">Con tus datos desde el ${fechaCorta(ini)} ${ini.slice(0, 4)} (${ndias} días).</p>`;
+  h += `<section class="card"><h2>Lo que muestran tus datos</h2><div class="list">${ins.map(insight).join("")}</div></section>`;
+  h += `<section class="card"><h2>Por día de la semana</h2><p class="tiny muted">Promedio gastado cada día</p>${barsSVG(dowAvg.map((v, i) => ({ l: DOW[i].slice(0, 2), a: v, hl: i === mx })), { label: "Gasto por día de la semana" })}
+    <div class="list">${catTop.map((c, i) => c && c[1] > 1.3 ? `<div class="li"><span class="t small" style="white-space:normal"><b>${DOW[i]}</b>: ${esc(catName(c[0], true))} pesa ${Math.round(c[1] * 10) / 10 === Math.round(c[1]) ? Math.round(c[1]) : String(Math.round(c[1] * 10) / 10).replace(".", ",")} veces más que en un día normal</span></div>` : "").join("")}</div></section>`;
+  h += `<section class="card"><h2>Por día del mes</h2><p class="tiny muted">Más oscuro es más gasto promedio ese día</p>${heatMes(domAvg, diaPago)}<div class="kpis">${tramos.map(([l, v]) => kpi(l, fmtK(v), "", "al día")).join("")}</div></section>`;
+  h += `<section class="card"><h2>Cuándo entra la plata</h2>${grandes.length ? `<div class="list">${grandes.slice(-8).reverse().map((x) => `<div class="li"><span class="t"><div>${esc(nombreMov(x.m))}</div><div class="tiny muted">día ${+x.f.slice(8)} · ${fechaCorta(x.f)}</div></span><span class="num in">${fmt(x.v, true)}</span></div>`).join("")}</div>` : `<p class="empty">Todavía no veo ingresos grandes.</p>`}</section>`;
+  h += `<section class="card"><h2>Por horario</h2>${conHora.length >= 8 ? barsSVG(franjas, { label: "Gasto por horario" }) + `<p class="tiny muted">Solo con compras que llegaron por Wallet, que traen la hora.</p>` : `<p class="empty">Cuando tengas unas cuantas compras de Wallet te muestro si gastas más en la mañana, tarde o noche.</p>`}</section>`;
+  h += `<section class="card"><h2>Por mes del año</h2><p class="empty">${dayDiff(primerDato(), hoy) >= 365 ? "" : "Con un año de datos te muestro qué meses del año son los más caros (vacaciones, Fiestas Patrias, Navidad)."}</p>${dayDiff(primerDato(), hoy) >= 365 ? estacional() : ""}</section>`;
+  return h;
+}
+function heatMes(avg, diaPago) {
+  const mx = Math.max(...avg.slice(1), 1);
+  let cells = "";
+  for (let d = 1; d <= 31; d++) { const p = avg[d] / mx; cells += `<div title="Día ${d}: ${fmt(avg[d])}" style="aspect-ratio:1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;font-family:var(--f-mono);background:color-mix(in srgb,var(--accent) ${Math.round(8 + p * 80)}%,var(--sunk));color:${p > 0.55 ? "var(--accent-ink)" : "var(--ink)"};${d === diaPago ? "outline:2px solid var(--warn);" : ""}">${d}</div>`; }
+  return `<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">${cells}</div>${diaPago ? `<p class="tiny muted">Con borde: el día que suele entrar tu plata.</p>` : ""}`;
+}
+function estacional() {
+  const s = Array(12).fill(0), n = Array(12).fill(0);
+  const d0 = primerDato(), cur = ymOf(today());
+  for (let ym = ymOf(d0); ym < cur; ym = addM(ym, 1)) { s[+ym.slice(5) - 1] += sum(gastosEn(ym + "-01", finMes(ym))); n[+ym.slice(5) - 1]++; }
+  return barsSVG(s.map((v, i) => ({ l: MES[i].slice(0, 1).toUpperCase(), a: n[i] ? v / n[i] : 0 })), { label: "Gasto por mes del año" });
+}
+
+function anComparar() {
+  const cur = ymOf(today());
+  const A = S.cmpA || cur, B = S.cmpB || addM(A, -1);
+  const meses = []; for (let i = 0; i < 24; i++) { const ym = addM(cur, -i); if (finMes(ym) < (primerDato() || cur)) break; meses.push(ym); }
+  const opt = (sel) => meses.map((ym) => `<option value="${ym}"${ym === sel ? " selected" : ""}>${mesLabel(ym)}</option>`).join("");
+  const ta = totales(A), tb = totales(B);
+  const parcial = A === cur;
+  const dia = +today().slice(8);
+  const tbP = parcial ? sum(gastosEn(B + "-01", dateWithDay(B, dia))) : null;
+  const dif = (a, b, inv) => { const d = a - b; if (!b && !a) return ""; const up = d > 0; const good = inv ? up : !up; return `<span class="num ${Math.abs(d) < 1 ? "muted" : good ? "in" : "bad"}">${Math.abs(d) < 1 ? "igual" : (up ? "▲ " : "▼ ") + fmtK(Math.abs(d))}</span>`; };
+  let h = `<div class="grid2"><label class="f">Mes<select data-ch="cmp" data-k="A">${opt(A)}</select></label><label class="f">Contra<select data-ch="cmp" data-k="B">${opt(B)}</select></label></div>`;
+  h += `<section class="card"><table class="tbl"><tr class="tiny muted"><td></td><td class="r">${mesCorto(A)}</td><td class="r">${mesCorto(B)}</td><td class="r">Diferencia</td></tr>
+    <tr><td>Entró</td><td class="r num">${fmtK(ta.ingreso)}</td><td class="r num">${fmtK(tb.ingreso)}</td><td class="r">${dif(ta.ingreso, tb.ingreso, true)}</td></tr>
+    <tr><td>Salió</td><td class="r num">${fmtK(ta.gasto)}</td><td class="r num">${fmtK(tb.gasto)}</td><td class="r">${dif(ta.gasto, tb.gasto)}</td></tr>
+    <tr><td>Neto</td><td class="r num">${fmtK(ta.neto)}</td><td class="r num">${fmtK(tb.neto)}</td><td class="r">${dif(ta.neto, tb.neto, true)}</td></tr></table>
+    ${parcial ? `<p class="tiny muted">${mesLabel(A)} va en curso. A la misma altura (día ${dia}) de ${MES[+B.slice(5) - 1]} llevabas ${fmt(tbP)} gastado, ahora ${fmt(ta.gasto)}.</p>` : ""}</section>`;
+  const rs = roots("gasto").map((r) => ({ r, a: ta.porRoot[r.id] || 0, b: tb.porRoot[r.id] || 0 })).filter((x) => x.a || x.b).sort((x, y) => Math.abs(y.a - y.b) - Math.abs(x.a - x.b));
+  h += `<section class="card"><h2>Por categoría</h2><p class="tiny muted">Ordenado por lo que más cambió</p><table class="tbl">${rs.map(({ r, a, b }) => `<tr data-act="drill" data-path="${r.id}" style="cursor:pointer"><td><span class="dot" style="background:${r.color};display:inline-block;margin-right:6px"></span>${esc(r.nombre)}</td><td class="r num">${fmtK(a)}</td><td class="r num muted">${fmtK(b)}</td><td class="r">${dif(a, b)}</td></tr>`).join("")}</table></section>`;
+  const subA = ta.porSub, subB = tb.porSub;
+  const subs = [...new Set([...Object.keys(subA), ...Object.keys(subB)])].map((k) => ({ k, d: (subA[k] || 0) - (subB[k] || 0) })).sort((x, y) => y.d - x.d);
+  const sube = subs.filter((x) => x.d > 0).slice(0, 3), baja = subs.filter((x) => x.d < 0).slice(-3).reverse();
+  if (sube.length || baja.length) h += `<section class="card"><h2>Lo que más cambió</h2><div class="list">${sube.map((x) => insight(`Subió ${esc(catName(x.k, true))}: ${fmt(x.d)} más`)).join("")}${baja.map((x) => insight(`Bajó ${esc(catName(x.k, true))}: ${fmt(x.d)} menos`)).join("")}</div></section>`;
+  return h;
+}
+
+function anPatrimonio() {
+  const cs = Object.values(S.cuentas).filter((c) => !c.archivada);
+  const activos = cs.filter((c) => c.tipo !== "credito");
+  const tcs = cs.filter((c) => c.tipo === "credito").map((c) => ({ c, deuda: tcInfo(c.id).usado }));
+  const totA = activos.reduce((s, c) => s + saldoCLP(c), 0), totD = tcs.reduce((s, x) => s + x.deuda, 0);
+  const pat = totA - totD;
+  const rinde = activos.filter((c) => c.tasa_anual && c.saldo > 0).map((c) => ({ c, mes: saldoCLP(c) * (Math.pow(1 + c.tasa_anual / 100, 1 / 12) - 1) }));
+  const mejorTasa = Math.max(0, ...activos.map((c) => +c.tasa_anual || 0));
+  const quietos = activos.filter((c) => !c.tasa_anual && c.saldo > 50000 && c.tipo !== "inversion");
+  let h = `<section class="card"><div class="eyebrow">Patrimonio neto</div><div class="big ${pat < 0 ? "bad" : ""}">${pat < 0 ? "debes " : ""}${fmt(pat)}</div><div class="kpis" style="grid-template-columns:1fr 1fr">${kpi("Tienes", fmt(totA), "in")}${kpi("Debes en tarjetas", fmt(totD), totD ? "bad" : "")}</div><p class="tiny muted">Dólares a ${fmt(usd())}. Lo cambias en Más.</p></section>`;
+  h += `<section class="card"><h2>Dónde está</h2><div class="list">${activos.map((c) => `<button class="li" data-act="editCuenta" data-id="${c.id}"><span class="t"><div>${esc(cuentaLabel(c.id))}</div><div class="tiny muted">${c.saldo_fecha ? "al " + fechaCorta(c.saldo_fecha) : "sin saldo"}${c.tasa_anual ? ` · rinde ${String(c.tasa_anual).replace(".", ",")}% anual` : ""}${c.moneda === "USD" && c.saldo != null ? " · " + fmt(saldoCLP(c)) : ""}</div></span><span class="num ${c.saldo < 0 ? "bad" : ""}">${c.saldo != null ? (c.saldo < 0 ? "debes " : "") + fmtMon(c.saldo, c.moneda) : "?"}</span></button>`).join("")}${tcs.map(({ c, deuda }) => `<button class="li" data-act="tab" data-tab="tarjeta"><span class="t"><div>${esc(cuentaLabel(c.id))}</div><div class="tiny muted">cupo usado</div></span><span class="num bad">${fmt(deuda)}</span></button>`).join("")}</div></section>`;
+  h += `<section class="card"><h2>Rendimientos</h2>`;
+  if (rinde.length) h += `<div class="list">${rinde.map(({ c, mes }) => `<div class="li"><span class="t"><div>${esc(cuentaLabel(c.id))}</div><div class="tiny muted">${String(c.tasa_anual).replace(".", ",")}% anual sobre ${fmtMon(c.saldo, c.moneda)}</div></span><span class="num in">${fmt(mes, true)} al mes</span></div>`).join("")}</div><p class="tiny muted">Estimado con la tasa que pusiste. Al año serían cerca de ${fmt(rinde.reduce((s, x) => s + x.mes, 0) * 12)}.</p>`;
+  const inv = activos.filter((c) => c.tipo === "inversion");
+  h += inv.map((c) => { const gan = c.aportado != null && c.saldo != null ? c.saldo - c.aportado : null; return `<div class="li"><span class="t"><div>${esc(cuentaLabel(c.id))}</div><div class="tiny muted">${c.aportado != null ? "pusiste " + fmtMon(c.aportado, c.moneda) : "anota cuánto has puesto para ver la ganancia"}</div></span>${gan != null ? `<span class="num ${gan < 0 ? "bad" : "in"}">${gan < 0 ? "pierdes " : "ganas "}${fmtMon(Math.abs(gan), c.moneda)} (${c.aportado ? (Math.round((gan / c.aportado) * 1000) / 10).toString().replace(".", ",") : 0}%)</span>` : `<button class="btn sm" data-act="editCuenta" data-id="${c.id}">Anotar</button>`}</div>`; }).join("");
+  if (!rinde.length && !inv.length) h += `<p class="empty">Ponle la tasa anual a las cuentas que rinden (por ejemplo Mercado Pago) desde Cuentas.</p>`;
+  h += `</section>`;
+  if (quietos.length && mejorTasa) {
+    const q = quietos.reduce((s, c) => s + saldoCLP(c), 0);
+    h += `<section class="card"><h2>Plata que no rinde</h2><p class="small">Tienes ${fmt(q)} en ${quietos.map((c) => esc(cuentaLabel(c.id))).join(" y ")} sin rendimiento. A la tasa más alta que tienes anotada (${String(mejorTasa).replace(".", ",")}% anual) eso serían cerca de ${fmt(q * (Math.pow(1 + mejorTasa / 100, 1 / 12) - 1))} al mes. Ojo que parte de esa plata puede ser la que necesitas a mano para el mes.</p></section>`;
+  }
+  // Historia del patrimonio con los saldos que se han ido anotando
+  const pts = [];
+  for (let i = 11; i >= 0; i--) {
+    const ym = addM(ymOf(today()), -i), fin = i === 0 ? today() : finMes(ym);
+    let v = 0, any = false;
+    for (const c of activos) { const hs = (c.hist || []).filter((x) => x.f <= fin); if (hs.length) { any = true; v += c.moneda === "USD" ? hs[hs.length - 1].s * usd() : hs[hs.length - 1].s; } }
+    if (any) pts.push({ l: mesCorto(ym), a: Math.max(0, v), hl: i === 0 });
+  }
+  h += `<section class="card"><h2>Cómo ha crecido</h2>${pts.length >= 2 ? barsSVG(pts, { label: "Plata en cuentas por mes" }) + `<p class="tiny muted">Suma de saldos de tus cuentas a fin de cada mes, sin restar tarjetas.</p>` : `<p class="empty">Se arma solo: cada vez que actualizas un saldo o importas una cartola con saldo, queda guardado. En un par de meses ves la curva.</p>`}</section>`;
+  return h;
 }
 
 /* ============ Hojas (sheets) ============ */
@@ -621,7 +852,7 @@ function sheetImport() {
   const cs = Object.values(S.cuentas);
   const nNew = I.filas.filter((f) => f.sel).length, nDup = I.filas.filter((f) => f.st === "dup").length, nW = I.filas.filter((f) => f.st === "wallet").length;
   return `<div class="row between"><h2>Revisar importación</h2><button class="btn ghost sm" data-act="close">Cancelar</button></div>
-    <p class="small muted">${esc(I.archivo)}${I.banco ? " · detecté " + BANCO[I.banco] + (I.credito ? ", tarjeta de crédito" : "") : " · no reconocí el banco, elige la cuenta"}</p>
+    <p class="small muted">${esc(I.archivo)}${I.banco ? " · detecté " + BANCO[I.banco] + (I.credito ? ", tarjeta de crédito" : "") : I.credito ? " · detecté una tarjeta de crédito" : " · no reconocí el banco, elige la cuenta"}</p>
     <label class="f">Cuenta<select id="impCuenta" data-ch="impCuenta">${cs.map((c) => `<option value="${c.id}"${I.cuenta === c.id ? " selected" : ""}>${esc(cuentaLabel(c.id))}</option>`).join("")}</select></label>
     ${I.estado ? `<div class="card" style="background:var(--sunk)"><h3>Estado de cuenta</h3><div class="small">Total ${I.estado.total != null ? fmt(I.estado.total) : "?"} · mínimo ${I.estado.minimo != null ? fmt(I.estado.minimo) : "?"} · vence ${I.estado.fecha_venc ? fechaCorta(I.estado.fecha_venc) : "?"}${I.estado.tasa ? " · tasa " + String(I.estado.tasa).replace(".", ",") + "%" : ""}</div><label class="row small"><input type="checkbox" id="impEstado" checked style="width:auto;min-height:0"> Guardarlo en la tarjeta</label></div>` : ""}
     <div class="row wrapr small"><span class="pill acc">${nNew} para importar</span>${nDup ? `<span class="pill">${nDup} ya estaban</span>` : ""}${nW ? `<span class="pill warn">${nW} calzan con Wallet</span>` : ""}</div>
@@ -686,11 +917,14 @@ function sheetEditCuenta() {
   return `<div class="row between"><h2>${S.sheet.nuevo ? "Nueva cuenta" : esc(cuentaLabel(c.id))}</h2><button class="btn ghost sm" data-act="close">Cerrar</button></div>
     <label class="f">Nombre<input id="cuNombre" value="${esc(c.nombre)}"></label>
     <div class="grid2"><label class="f">Banco<select id="cuBanco"><option value="">Otro</option>${Object.entries(BANCO).map(([k, v]) => `<option value="${k}"${c.banco === k ? " selected" : ""}>${v}</option>`).join("")}</select></label>
-    <label class="f">Tipo<select id="cuTipo" data-ch="cuTipo">${[["corriente", "Cuenta corriente"], ["vista", "Cuenta vista"], ["credito", "Tarjeta de crédito"], ["billetera", "Billetera"], ["ahorro", "Ahorro"]].map(([k, v]) => `<option value="${k}"${(S.sheet.tipo || c.tipo) === k ? " selected" : ""}>${v}</option>`).join("")}</select></label></div>
+    <label class="f">Tipo<select id="cuTipo" data-ch="cuTipo">${TIPOS.map(([k, v]) => `<option value="${k}"${(S.sheet.tipo || c.tipo) === k ? " selected" : ""}>${v}</option>`).join("")}</select></label></div>
     ${tc ? `<div class="grid2"><label class="f">Cupo total<input id="cuCupo" type="number" inputmode="numeric" value="${c.cupo ?? ""}"></label><label class="f">Cupo en dólares<input id="cuCupoUsd" type="number" inputmode="numeric" value="${c.cupo_usd ?? ""}"></label>
       <label class="f">Día de cierre<input id="cuCierre" type="number" inputmode="numeric" min="1" max="31" value="${c.dia_cierre ?? ""}"></label><label class="f">Día de vencimiento<input id="cuVenc" type="number" inputmode="numeric" min="1" max="31" value="${c.dia_venc ?? ""}"></label></div>
-      <label class="f">Tasa interés rotativo (% mensual, sale en el estado de cuenta)<input id="cuTasa" type="number" inputmode="decimal" step="0.01" value="${c.tasa ?? ""}"></label>`
-    : `<div class="grid2"><label class="f">Saldo actual<input id="cuSaldo" type="number" inputmode="numeric" value="${c.saldo ?? ""}"></label><label class="f">Al día<input id="cuSaldoF" type="date" value="${c.saldo_fecha || today()}"></label></div>`}
+      <label class="f">Tasa interés rotativo (% mensual, sale en el estado de cuenta)<input id="cuTasa" type="number" inputmode="decimal" step="0.01" value="${c.tasa ?? ""}"></label>
+      <label class="f">Pago automático<select id="cuPagoAuto"><option value="">No tengo</option><option value="minimo"${c.pago_auto === "minimo" ? " selected" : ""}>Monto mínimo</option><option value="total"${c.pago_auto === "total" ? " selected" : ""}>Monto total</option></select></label>`
+    : `<div class="grid2"><label class="f">Saldo actual (negativo si estás en sobregiro)<input id="cuSaldo" type="number" inputmode="decimal" step="any" value="${c.saldo ?? ""}"></label><label class="f">Al día<input id="cuSaldoF" type="date" value="${c.saldo_fecha || today()}"></label>
+      <label class="f">Moneda<select id="cuMoneda"><option value="CLP">Pesos</option><option value="USD"${c.moneda === "USD" ? " selected" : ""}>Dólares</option></select></label><label class="f">Rinde (% anual)<input id="cuTasaAnual" type="number" inputmode="decimal" step="0.01" value="${c.tasa_anual ?? ""}"></label>
+      ${(S.sheet.tipo || c.tipo) === "inversion" ? `<label class="f">Total que has puesto<input id="cuAportado" type="number" inputmode="decimal" step="any" value="${c.aportado ?? ""}"></label>` : `<label class="f">Línea o sobregiro total<input id="cuLinea" type="number" inputmode="numeric" value="${c.linea ?? ""}"></label>`}</div>`}
     <button class="btn primary" data-act="saveCuenta">Guardar</button>
     ${S.sheet.nuevo ? "" : `<button class="btn danger" data-act="archCuenta">${c.archivada ? "Volver a mostrar" : "Ocultar cuenta"}</button>`}`;
 }
@@ -705,7 +939,7 @@ function sheetEditEstado() {
 }
 
 /* ============ Render ============ */
-const TITLES = { mes: "Mi mes", gastos: "Gastos", bandeja: "Por clasificar", tarjeta: "Tarjeta", mas: "Más" };
+const TITLES = { mes: "Mi mes", gastos: "Gastos", bandeja: "Por clasificar", tarjeta: "Tarjeta", analisis: "Análisis", mas: "Más" };
 const SUBT = { importar: "Importar", meta: "Meta de ahorro", presupuesto: "Presupuesto", categorias: "Categorías", reglas: "Reglas", cuentas: "Cuentas", atajos: "Atajos", movs: "Movimientos" };
 function render() {
   const main = $("#main");
@@ -716,7 +950,7 @@ function render() {
   $("#hdrEye").textContent = DEMO ? "Finanzas · demo" : "Finanzas";
   document.querySelectorAll(".tab").forEach((b) => b.setAttribute("aria-current", b.dataset.tab === S.tab ? "page" : "false"));
   const n = pendientes().length, bd = $("#badge"); bd.hidden = !n; bd.textContent = n > 99 ? "99+" : n;
-  const V = { mes: viewMes, gastos: viewGastos, bandeja: viewBandeja, tarjeta: viewTarjeta, mas: viewMas }[S.tab] || viewMes;
+  const V = { mes: viewMes, gastos: viewGastos, bandeja: viewBandeja, tarjeta: viewTarjeta, analisis: viewAnalisis, mas: viewMas }[S.tab] || viewMes;
   main.innerHTML = V();
   $("#overlay").innerHTML = sheetHtml();
   const q = $("#movQ"); if (q) q.oninput = () => { S.q = q.value; const pos = q.selectionStart; render(); const n2 = $("#movQ"); n2.focus(); try { n2.setSelectionRange(pos, pos); } catch (e) {} };
@@ -739,6 +973,9 @@ const ACT = {
   login: async () => { if (!sb) return; const redirect = location.origin + location.pathname; const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: redirect, queryParams: { prompt: "select_account" } } }); if (error) $("#loginMsg").textContent = "No se pudo abrir Google: " + error.message; },
   logout: async () => { await flush(); if (Object.keys(outbox).length) { toast("Hay cambios sin subir. Conéctate antes de salir."); return; } await sb.auth.signOut(); LS.set("fin.cache", null); location.reload(); },
   tcSel: (el) => { S.tcSel = el.dataset.id; render(); },
+  an: (el) => { S.an = el.dataset.k; render(); },
+  anPer: (el) => { S.anPer = el.dataset.k; render(); },
+  irMes: (el) => { S.mes = el.dataset.ym; go("mes"); },
   copiar: async (el) => { try { await navigator.clipboard.writeText(el.dataset.txt); toast("Copiado"); } catch (e) { toast("No pude copiar, mantén apretado el texto"); } },
 
   /* Bandeja */
@@ -775,7 +1012,7 @@ const ACT = {
 
   /* Movimientos */
   editMov: (el) => { S.sheet = { t: "editMov", id: el.dataset.id }; render(); },
-  nuevoMov: () => { S.sheet = { t: "editMov", nuevo: true, m: { id: uid(), fecha: today(), monto: "", cuenta_id: S.aj.ultimaCuenta || "bch_cc", estado: "ok", origen: "manual" } }; render(); },
+  nuevoMov: () => { S.sheet = { t: "editMov", nuevo: true, m: { id: uid(), fecha: today(), monto: "", cuenta_id: S.aj.ultimaCuenta || "bch_vista", estado: "ok", origen: "manual" } }; render(); },
   saveMov: () => {
     const m = S.sheet.nuevo ? S.sheet.m : S.mov[S.sheet.id]; if (!m) return;
     const monto = parseFloat($("#emMonto").value); if (!isFinite(monto) || !monto) { toast("Pon un monto"); return; }
@@ -792,8 +1029,8 @@ const ACT = {
 
   /* Importar */
   pickFile: (el) => { const f = $("#fileIn"); f.accept = el.dataset.accept || ".xlsx,.xls,.csv,.pdf,.txt,image/*"; f.value = ""; f.click(); },
-  leerTexto: () => { const t = $("#capTexto").value; if (!t.trim()) { toast("Pega el texto primero"); return; } const det = L.detectarBanco(t, ""); prepararImport({ archivo: "Texto pegado", banco: det.banco, credito: det.credito, filas: L.leerCaptura(t, new Date()), origen: "captura" }); },
-  abrirCaptura: (el) => { const k = +(el.dataset.k || 0); const c = S.capturas[k]; if (!c) return; const t = c.data.texto || ""; const det = L.detectarBanco(t + " " + (c.data.banco || ""), ""); prepararImport({ archivo: "Captura del Atajo", banco: det.banco, credito: det.credito, filas: L.leerCaptura(t, new Date(c.created_at)), origen: "captura", capturaId: c.id }); },
+  leerTexto: () => { const t = $("#capTexto").value; if (!t.trim()) { toast("Pega el texto primero"); return; } const det = L.detectarBanco(t, ""); prepararImport({ archivo: "Texto pegado", banco: det.banco, credito: det.credito, filas: L.leerCaptura(t, new Date()), origen: "captura", texto: t }); },
+  abrirCaptura: (el) => { const k = +(el.dataset.k || 0); const c = S.capturas[k]; if (!c) return; const t = c.data.texto || ""; const det = L.detectarBanco(t + " " + (c.data.banco || ""), ""); prepararImport({ archivo: "Captura del Atajo", banco: det.banco, credito: det.credito, filas: L.leerCaptura(t, new Date(c.created_at)), origen: "captura", capturaId: c.id, texto: t }); },
   impSigno: (el) => { const f = S.imp.filas[+el.dataset.k]; f.monto = -f.monto; anotarFilas(); render(); },
   doImport: () => doImport(),
 
@@ -804,8 +1041,12 @@ const ACT = {
     const sh = S.sheet; const c = sh.nuevo ? { id: "c" + Date.now().toString(36), orden: Object.keys(S.cuentas).length } : S.cuentas[sh.id];
     c.nombre = $("#cuNombre").value.trim() || "Cuenta"; c.banco = $("#cuBanco").value; c.tipo = $("#cuTipo").value;
     const num = (sel) => { const e = $(sel); if (!e) return undefined; const v = e.value; return v === "" ? null : +v; };
-    if (c.tipo === "credito") { c.cupo = num("#cuCupo"); c.cupo_usd = num("#cuCupoUsd"); c.dia_cierre = num("#cuCierre"); c.dia_venc = num("#cuVenc"); c.tasa = num("#cuTasa"); }
-    else { const s = num("#cuSaldo"); if (s !== undefined) { c.saldo = s; c.saldo_fecha = $("#cuSaldoF").value || today(); } }
+    if (c.tipo === "credito") { c.cupo = num("#cuCupo"); c.cupo_usd = num("#cuCupoUsd"); c.dia_cierre = num("#cuCierre"); c.dia_venc = num("#cuVenc"); c.tasa = num("#cuTasa"); c.pago_auto = $("#cuPagoAuto").value || null; }
+    else {
+      const s = num("#cuSaldo"); if (s != null) setSaldo(c, s, $("#cuSaldoF").value || today());
+      c.moneda = $("#cuMoneda").value === "USD" ? "USD" : undefined; c.tasa_anual = num("#cuTasaAnual");
+      if ($("#cuAportado")) c.aportado = num("#cuAportado"); if ($("#cuLinea")) c.linea = num("#cuLinea");
+    }
     save("cuentas", c); S.sheet = null; toast("Guardado"); render();
   },
   archCuenta: () => { const c = S.cuentas[S.sheet.id]; c.archivada = !c.archivada; save("cuentas", c); S.sheet = null; render(); },
@@ -867,9 +1108,11 @@ document.addEventListener("click", (e) => {
 });
 document.addEventListener("change", (e) => {
   const el = e.target; const ch = el.dataset && el.dataset.ch; if (!ch) return;
-  if (ch === "aj") { S.aj[el.dataset.k] = el.value === "" ? null : +el.value; save("aj", S.aj); }
+  if (ch === "ajTxt") { S.aj[el.dataset.k] = el.value; save("aj", S.aj); }
+  else if (ch === "aj") { S.aj[el.dataset.k] = el.value === "" ? null : +el.value; save("aj", S.aj); }
   else if (ch === "pres") { const c = S.cat[el.dataset.id]; c.presupuesto = el.value === "" ? null : +el.value; save("cat", c); render(); }
   else if (ch === "meta") { const m = metaActiva(); const k = el.dataset.k; m[k] = el.value === "" ? null : k === "objetivo" ? +el.value : el.value; save("metas", m); render(); }
+  else if (ch === "cmp") { S["cmp" + el.dataset.k] = el.value; render(); }
   else if (ch === "impCuenta") { S.imp.cuenta = el.value; anotarFilas(); render(); }
   else if (ch === "impSel") { S.imp.filas[+el.dataset.k].sel = el.checked; render(); }
   else if (ch === "cuTipo") { S.sheet.tipo = el.value; const keep = { n: $("#cuNombre").value, b: $("#cuBanco").value }; render(); $("#cuNombre").value = keep.n; $("#cuBanco").value = keep.b; }
@@ -953,10 +1196,18 @@ async function leerImagen(f) {
 function adivinarCuenta(banco, credito) {
   const cs = Object.values(S.cuentas).filter((c) => !c.archivada);
   if (banco) { const m = cs.filter((c) => c.banco === banco); const pick = m.find((c) => (c.tipo === "credito") === !!credito) || m[0]; if (pick) return pick.id; }
+  if (credito) { const tcs = cs.filter((c) => c.tipo === "credito"); if (tcs.length === 1) return tcs[0].id; }
   return S.aj.ultimaCuenta && S.cuentas[S.aj.ultimaCuenta] ? S.aj.ultimaCuenta : (cs[0] || {}).id;
 }
 function prepararImport(o) {
   o.filas = (o.filas || []).filter((f) => f.fecha && f.monto).map((f) => Object.assign({}, f));
+  // Una cuota se cobra en su mes, no en la fecha de compra
+  const pm = L.norm(o.texto || "").match(/PERIODO INICIADO EL ([0-9]{1,2} DE [A-Z]+ DE [0-9]{4}|[0-9/.-]+)/);
+  const ini = pm ? L.parseFecha(pm[1]) : null;
+  for (const f of o.filas) {
+    if (f.cuotas && f.cuotas.n > 1) { f.fecha_compra = f.fecha; f.fecha = dateWithDay(addM(ymOf(f.fecha), f.cuotas.n - 1), +f.fecha.slice(8)); }
+    if (ini && f.fecha < ini) { f.fecha_compra = f.fecha_compra || f.fecha; f.fecha = ini; }
+  }
   o.cuenta = adivinarCuenta(o.banco, o.credito);
   S.imp = o; anotarFilas(); S.sheet = { t: "import" }; render();
 }
@@ -973,7 +1224,7 @@ function anotarFilas() {
       const g5 = L.norm(f.glosa).replace(/[^A-Z0-9]/g, "").slice(0, 5);
       const gem = movsList().find((m) => !usados.has(m.id) && (m.cuenta_id === cta || m.origen === "wallet") && Math.abs(dayDiff(m.fecha, f.fecha)) <= 3 &&
         (Math.round(Math.abs(m.monto)) === Math.round(Math.abs(f.monto)) || (m.origen === "wallet" && f.cuotas && Math.abs(Math.abs(m.monto) - Math.abs(f.monto) * f.cuotas.de) < f.cuotas.de * 2)) &&
-        Math.sign(m.monto) === Math.sign(f.monto) && (m.origen === "wallet" ? !m.conciliado : L.norm(m.glosa || "").replace(/[^A-Z0-9]/g, "").slice(0, 5) === g5));
+        Math.sign(m.monto) === Math.sign(f.monto) && !(m.cuotas && f.cuotas && m.cuotas.n !== f.cuotas.n) && (m.origen === "wallet" ? !m.conciliado : L.norm(m.glosa || "").replace(/[^A-Z0-9]/g, "").slice(0, 5) === g5));
       if (gem) { usados.add(gem.id); f.gemelo = gem.id; f.st = gem.origen === "wallet" && !gem.conciliado ? "wallet" : "dup"; }
     }
     if (f.sel == null || f._stPrev !== f.st) f.sel = f.st !== "dup";
@@ -992,14 +1243,14 @@ function doImport() {
       if (f.cuotas) m.cuotas = f.cuotas;
       save("mov", m); conc++; continue;
     }
-    const m = clasificar({ id: uid(), cuenta_id: I.cuenta, fecha: f.fecha, monto: f.monto, huella: f.huella, glosa: f.glosa, moneda: f.moneda === "USD" ? "USD" : undefined, cuotas: f.cuotas, origen: I.origen || "cartola", importado: new Date().toISOString() });
+    const m = clasificar({ id: uid(), cuenta_id: I.cuenta, fecha: f.fecha, fecha_compra: f.fecha_compra, monto: f.monto, huella: f.huella, glosa: f.glosa, moneda: f.moneda === "USD" ? "USD" : undefined, cuotas: f.cuotas, origen: I.origen || "cartola", importado: new Date().toISOString() });
     if (m.estado !== "pendiente") auto++;
     save("mov", m); nuevos++;
   }
   // Saldo de la cuenta según la fila más reciente que lo traiga
   const conSaldo = I.filas.filter((f) => f.saldo != null && !f.dudoso).sort((a, b) => (a.fecha < b.fecha ? 1 : -1))[0];
   const c = S.cuentas[I.cuenta];
-  if (conSaldo && c && c.tipo !== "credito" && (!c.saldo_fecha || conSaldo.fecha >= c.saldo_fecha)) { c.saldo = conSaldo.saldo; c.saldo_fecha = conSaldo.fecha; save("cuentas", c); }
+  if (conSaldo && c && c.tipo !== "credito" && (!c.saldo_fecha || conSaldo.fecha >= c.saldo_fecha)) { setSaldo(c, conSaldo.saldo, conSaldo.fecha); save("cuentas", c); }
   // Estado de cuenta de la tarjeta
   const chk = $("#impEstado");
   if (I.estado && (!chk || chk.checked) && c) {
@@ -1027,9 +1278,11 @@ async function cargarEntrantes() {
   for (const r of wallet) {
     const d = r.data || {}; const v = L.parseMonto(d.monto); if (v == null) { marcarProcesado(r.id); continue; }
     const t = L.norm(d.tarjeta);
-    const cta = /BICE/.test(t) ? "bice" : /MERCADO/.test(t) ? "mp" : (cuentasTC()[0] || {}).id || "bch_tc";
+    const tc = cuentasTC().find((c) => c.banco === "bice");
+    const cta = /BICE/.test(t) ? (tc ? tc.id : "bice") : /MERCADO/.test(t) ? "mp" : /CHILE|EDWARDS/.test(t) ? "bch_vista" : S.aj.walletCuenta && S.cuentas[S.aj.walletCuenta] ? S.aj.walletCuenta : "bch_vista";
+    const hm = String(d.fecha || "").match(/(\d{1,2}):(\d{2})/) || String(r.created_at).match(/T(\d{2}):(\d{2})/);
     const id = "w-" + r.id;
-    if (!S.mov[id]) save("mov", clasificar({ id, cuenta_id: cta, fecha: L.parseFecha(d.fecha) || String(r.created_at).slice(0, 10), monto: -Math.abs(v), moneda: L.monedaDe(d.monto) === "USD" ? "USD" : undefined, glosa: d.comercio || d.nombre || "Compra Wallet", origen: "wallet", tarjeta: d.tarjeta }));
+    if (!S.mov[id]) save("mov", clasificar({ id, cuenta_id: cta, fecha: L.parseFecha(d.fecha) || String(r.created_at).slice(0, 10), monto: -Math.abs(v), moneda: L.monedaDe(d.monto) === "USD" ? "USD" : undefined, glosa: d.comercio || d.nombre || "Compra Wallet", origen: "wallet", tarjeta: d.tarjeta, hora: hm ? +hm[1] : undefined }));
     marcarProcesado(r.id);
   }
   render();
@@ -1118,11 +1371,11 @@ async function onUser(user) {
 /* ============ Modo demo ============ */
 function seedDemo() {
   seedCats(); seedCuentas(); seedMeta();
-  const c = S.cuentas.bch_tc; Object.assign(c, { cupo: 1500000, dia_cierre: 20, dia_venc: 5, tasa: 2.1 });
-  S.cuentas.bch_cc.saldo = 412300; S.cuentas.bch_cc.saldo_fecha = addD(today(), -1);
-  S.cuentas.bice.saldo = 1250000; S.cuentas.bice.saldo_fecha = addD(today(), -5);
-  S.cuentas.mp.saldo = 38400; S.cuentas.mp.saldo_fecha = addD(today(), -2);
-  Object.assign(S.metas.guatemala, { objetivo: 1800000, cuenta: "bice", aportes: [{ monto: 100000, fecha: addD(today(), -20) }] });
+  const c = S.cuentas.bice_tc; Object.assign(c, { cupo: 800000, cupo_usd: 530, dia_cierre: 28, dia_venc: 12, tasa: 2.1 });
+  const hist = (c, base, paso) => { for (let i = 5; i >= 0; i--) setSaldo(c, Math.round(base - paso * i + (i % 2) * paso * 0.3), i === 0 ? addD(today(), -1) : finMes(addM(ymOf(today()), -i))); };
+  hist(S.cuentas.bch_vista, 384707, 20000); hist(S.cuentas.mp, 1722514, 60000); setSaldo(S.cuentas.bice, -936, addD(today(), -1)); S.cuentas.bice.linea = 200000;
+  S.cuentas.mp.tasa_anual = 3.9; hist(S.cuentas.fintual, 401.33, 0); S.cuentas.fintual.aportado = 400; S.cuentas.bice_tc.pago_auto = "minimo";
+  Object.assign(S.metas.guatemala, { objetivo: 1800000, cuenta: "mp", aportes: [{ monto: 100000, fecha: addD(today(), -20) }] });
   S.aj = { aviso1: 80, aviso2: 100, usd: 950 };
   [["comida", 220000], ["transporte", 90000], ["ocio", 80000], ["subs", 35000], ["compras", 100000]].forEach(([id, v]) => (S.cat[id].presupuesto = v));
   let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
@@ -1132,30 +1385,31 @@ function seedDemo() {
   for (let k = 3; k >= 0; k--) {
     const ym = addM(ymOf(today()), -k); const lim = k === 0 ? +today().slice(8) : lastDay(+ym.slice(0, 4), +ym.slice(5));
     const D = (d) => dateWithDay(ym, Math.min(d, lim));
-    if (lim >= 1) add("bch_cc", D(1), 450000, "REMUNERACION VANTRUST CAPITAL");
-    if (lim >= 5) add("bch_cc", D(5), -180000, "PAGO TARJETA CREDITO");
-    if (lim >= 3) add("bch_tc", D(3), -6990, "SPOTIFY P1234");
-    if (lim >= 9) add("bch_tc", D(9), -10990, "NETFLIX.COM");
-    if (lim >= 2) add("bch_tc", D(2), -45000, "LIT FITNESS SPA");
-    if (lim >= 12) add("bch_tc", D(12), -14990, "ENTEL PCS");
-    if (lim >= 15) add("bch_cc", D(15), 60000, "TRANSFERENCIA DE APODERADO CLASES");
+    if (lim >= 1) add("bch_vista", D(1), 450000, "REMUNERACION VANTRUST CAPITAL");
+    if (lim >= 5) add("bch_vista", D(5), -180000, "PAGO TARJETA CREDITO");
+    if (lim >= 3) add("bice_tc", D(3), -6990, "SPOTIFY P1234");
+    if (lim >= 9) add("bice_tc", D(9), -10990, "NETFLIX.COM");
+    if (lim >= 2) add("bice_tc", D(2), -45000, "LIT FITNESS SPA");
+    if (lim >= 12) add("bice_tc", D(12), -14990, "ENTEL PCS");
+    if (lim >= 15) add("bch_vista", D(15), 60000, "TRANSFERENCIA DE APODERADO CLASES");
     for (let d = 1; d <= lim; d += 3) {
-      add("bch_tc", D(d), -Math.round(8000 + rnd() * 35000), "LIDER EXPRESS LO BARNECHEA");
-      if (rnd() > 0.4) add("bch_tc", D(d + 1), -Math.round(3500 + rnd() * 2500), "STARBUCKS PLAZA");
+      add("bice_tc", D(d), -Math.round(8000 + rnd() * 35000), "LIDER EXPRESS LO BARNECHEA");
+      if (rnd() > 0.4) add("bice_tc", D(d + 1), -Math.round(3500 + rnd() * 2500), "STARBUCKS PLAZA", { origen: "wallet", hora: 8 + Math.floor(rnd() * 3) });
+      if (rnd() > 0.6) add("bch_vista", D(d + 2), -Math.round(6000 + rnd() * 12000), "BAR LA PIOJERA", { origen: "wallet", hora: 20 + Math.floor(rnd() * 3), cat: "ocio.salidas", estado: "ok" });
       if (rnd() > 0.5) add("mp", D(d + 1), -Math.round(3000 + rnd() * 9000), "UBER TRIP HELP.UBER.COM");
       if (rnd() > 0.7) add("mp", D(d + 2), -Math.round(12000 + rnd() * 15000), "MERPAGO*SAKURA SUSHI");
-      if (rnd() > 0.8) add("bch_tc", D(d), -Math.round(15000 + rnd() * 20000), "RAPPI CHILE");
+      if (rnd() > 0.8) add("bice_tc", D(d), -Math.round(15000 + rnd() * 20000), "RAPPI CHILE");
     }
-    if (lim >= 18) add("bch_tc", D(18), -35000, "COPEC LO BARNECHEA");
+    if (lim >= 18) add("bice_tc", D(18), -35000, "COPEC LO BARNECHEA");
   }
   const m0 = ymOf(today());
-  add("bch_tc", dateWithDay(addM(m0, -2), 10), -40000, "FALABELLA PARQUE ARAUCO 01/06", { cuotas: { n: 1, de: 6 } });
-  add("bch_tc", dateWithDay(addM(m0, -1), 10), -40000, "FALABELLA PARQUE ARAUCO 02/06", { cuotas: { n: 2, de: 6 } });
-  add("bch_tc", addD(today(), -1), -23990, "MERPAGO*LA BURGUESIA");
-  add("bch_tc", addD(today(), -1), -8900, "CINEPLANET COSTANERA");
+  add("bice_tc", dateWithDay(addM(m0, -2), 10), -40000, "FALABELLA PARQUE ARAUCO 01/06", { cuotas: { n: 1, de: 6 } });
+  add("bice_tc", dateWithDay(addM(m0, -1), 10), -40000, "FALABELLA PARQUE ARAUCO 02/06", { cuotas: { n: 2, de: 6 } });
+  add("bice_tc", addD(today(), -1), -23990, "MERPAGO*LA BURGUESIA");
+  add("bice_tc", addD(today(), -1), -8900, "CINEPLANET COSTANERA");
   add("bice", addD(today(), -2), -129000, "LATAM AIRLINES GROUP");
-  add("bch_tc", addD(today(), -2), -6990, "SPOTIFY P1234", { huella: "x2" });
-  add("bch_cc", addD(today(), -3), -15000, "TRANSF A JUAN PEREZ");
+  add("bice_tc", addD(today(), -2), -6990, "SPOTIFY P1234", { huella: "x2" });
+  add("bch_vista", addD(today(), -3), -15000, "TRANSF A JUAN PEREZ");
   S.ready = true;
 }
 

@@ -84,7 +84,7 @@
     for (const t of txts) {
       const s = norm(t);
       if (!s) continue;
-      let m = s.match(/CUOTAS?\s*(\d{1,2})\s*(?:DE|\/)\s*(\d{1,2})/) || s.match(/\b(\d{1,2})\s*DE\s*(\d{1,2})\s*CUOTAS?/) || s.match(/(?:^|\s)(\d{2})\/(\d{2})(?:\s|$)/);
+      let m = s.match(/CUOTAS?\s*(\d{1,2})\s*(?:DE|\/)\s*(\d{1,2})/) || s.match(/\b(\d{1,2})\s*DE\s*(\d{1,2})\s*CUOTAS?/) || s.match(/(?:^|\s)(\d{1,2})-(\d{2})\s*CUOTA/) || s.match(/(?:^|\s)(\d{2})\/(\d{2})(?:\s|$)/);
       if (m && +m[2] > 1 && +m[2] <= 48 && +m[1] >= 1 && +m[1] <= +m[2]) return { n: +m[1], de: +m[2] };
     }
     return null;
@@ -261,7 +261,10 @@
       if (/^\d{1,2}(\s+DE)?\s+[A-Z]{3,}\.?(\s+(DE\s+)?\d{4})?$/.test(n) || /^\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?$/.test(n)) return parseFecha(n, ref);
       return null;
     };
+    const TOTALES = /TOTAL|SALDO|DISPONIBLE|CUPO|PERIODO|FACTURAD|ABONOS|CARGOS|SUJETOS A/;
     for (const l of lines) {
+      const cq = norm(l).match(/^CUOTA\s+(\d{1,2})\s+DE\s+(\d{1,2})$/);
+      if (cq) { if (out.length) out[out.length - 1].cuotas = { n: +cq[1], de: +cq[2] }; desc = []; continue; }
       const d = isDateLine(l);
       if (d) { fechaActual = d; desc = []; continue; }
       AMT_RE.lastIndex = 0;
@@ -271,15 +274,18 @@
         const v = parseMonto(am[0]);
         if (v == null || v === 0) continue;
         let glosa = onlyAmount ? desc.join(" ") : l.replace(am[0], "").trim();
-        const fechaInline = parseFecha(glosa, ref) || null;
-        glosa = glosa.replace(/\b\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?\b/, "").trim();
-        if (!glosa) { desc = []; continue; }
+        const cuotaInline = /CUOTA/i.test(glosa) ? cuotasDe(glosa) : null;
+        glosa = glosa.replace(/\s*\b\d{1,2}-\d{2}(?=\s|$)/g, " ").replace(/\bcuotas?\b(\s*\d+\s*de\s*\d+)?/gi, " ").replace(/tasa int\.?\s*[\d.,]+\s*%/gi, " ").replace(/[*]\s*$/, "").replace(/\s+/g, " ").trim();
+        const fi = glosa.match(/\b\d{1,2}\/\d{1,2}(\/\d{2,4})?\b/);
+        const fechaInline = fi ? parseFecha(fi[0], ref) : null;
+        if (fi) glosa = glosa.replace(fi[0], "").trim();
+        if (!glosa || TOTALES.test(norm(glosa))) { desc = []; continue; }
         const signed = /^[\s]*[-−]/.test(am[0]) || /^[-−]/.test(l.trim()) ? -Math.abs(v) : /^\s*\+/.test(l) ? Math.abs(v) : POSITIVO.test(norm(glosa)) ? Math.abs(v) : -Math.abs(v);
-        out.push({ fecha: fechaInline || fechaActual || parseFecha("hoy", ref), glosa, monto: signed, dudoso: true, cuotas: cuotasDe(glosa) || undefined });
+        out.push({ fecha: fechaInline || fechaActual || parseFecha("hoy", ref), glosa, monto: signed, dudoso: true, cuotas: cuotaInline || undefined });
         desc = [];
       } else {
         const dInline = parseFecha(l, ref);
-        if (dInline && /\d/.test(l) && l.length < 14) { fechaActual = dInline; continue; }
+        if (dInline && /\//.test(l) && !/CUOTA/i.test(l) && l.length < 14) { fechaActual = dInline; continue; }
         desc.push(l);
         if (desc.length > 2) desc.shift();
       }
@@ -288,10 +294,12 @@
   }
 
   /* Nombre legible desde la glosa: "MERPAGO*SAKURA SUSHI SANTIAGO CL" pasa a "Sakura Sushi". */
+  // Cosas que el banco agrega a la glosa y no son parte del comercio
+  const BASURA = /TASA INT\.?\s*[\d.,]+\s*%|\b\d{1,2}-\d{2}\s*CUOTAS?\b|\bCUOTAS?\s*\d+\s*DE\s*\d+\b|\bCUOTA\b/g;
   const PREFIJOS = /^(COMPRA(S)?( NACIONAL| NAC| INTERNACIONAL| INT| EN)?|PAGO( EN| DE)?|CARGO( POR)?|POS|TRX|TRANSACCION|COMPRA DEBITO|COMPRA CON TARJETA|COMPRA TARJETA|DEBITO|PAT)\s+/;
   function limpiarGlosa(g) {
-    let s = norm(g);
-    s = s.replace(/^(MERPAGO|MERCADOPAGO|MP|PAYU|DLO|SUMUP|FLOW|KHIPU|PAYPAL|TBK|WEBPAY|SQ|GETNET|KLAP)\s?\*\s?/, "");
+    let s = norm(g).replace(BASURA, " ").replace(/\s+/g, " ").trim();
+    s = s.replace(/^(MERPAGO|MERCADOPAGO)\s?\*?\s?(?=[A-Z])/, "").replace(/^(MP|PAYU|DLO|SUMUP|FLOW|KHIPU|PAYPAL|TBK|WEBPAY|SQ|GETNET|KLAP)\s?\*\s?/, "");
     for (let i = 0; i < 2; i++) s = s.replace(PREFIJOS, "");
     s = s.replace(/\b(SANTIAGO|STGO|LAS CONDES|PROVIDENCIA|VITACURA|LO BARNECHEA|NUNOA|CL|CHL|CHILE|US|USA|IE|GB)\b\.?/g, " ");
     s = s.replace(/\b\d{1,2}\/\d{2}\b/g, " ").replace(/[*#_]/g, " ").replace(/\b\d{3,}\b/g, " ").replace(/\s+/g, " ").trim();
@@ -302,7 +310,7 @@
 
   /* Parte de la glosa que sirve como regla. */
   function patronDe(g) {
-    let s = norm(g).replace(/\b\d{1,2}\/\d{2}\b/g, " ").replace(/\b\d+\b/g, " ").replace(/\b(SANTIAGO|STGO|CL|CHL|CHILE)\b/g, " ").replace(/\s+/g, " ").trim();
+    let s = norm(g).replace(BASURA, " ").replace(/\b\d{1,2}\/\d{2}\b/g, " ").replace(/\b\d+\b/g, " ").replace(/\b(SANTIAGO|STGO|CL|CHL|CHILE)\b/g, " ").replace(/\s+/g, " ").trim();
     s = s.replace(PREFIJOS, "");
     return s.split(" ").slice(0, 3).join(" ").trim() || norm(g).slice(0, 20);
   }
@@ -333,7 +341,7 @@
     [/\b(BAR|PUB|SCHOP|DISCOTHEQUE|BOTILLERIA|LICORERIA)\b/, "ocio.salidas"],
     [/\b(UNIVERSIDAD DE CHILE|UCHILE|FEN|LIBRERIA|COPIAS|FOTOCOPIA|ANTARTICA)\b/, "u.material"],
   ];
-  const INTERNO = /TRASPASO|TRANSFERENCIA A CUENTA PROPIA|TRANSF(ERENCIA)? (A|ENTRE) (MIS )?CUENTAS? PROPIAS?|PAGO (DE )?TARJETA|PAGO TC|PAGO TARJ|ABONO PAGO|PAGO RECIBIDO|PAGO NACIONAL TAR|AVANCE A CUENTA|CARGA (DE )?SALDO|RECARGA MERCADO PAGO|INGRESO DE DINERO/;
+  const INTERNO = /TRASPASO|TRANSFERENCIA A CUENTA PROPIA|TRANSF(ERENCIA)? (A|ENTRE) (MIS )?CUENTAS? PROPIAS?|PAGO (DE )?TARJETA|PAGO TC|PAGO TARJ|ABONO PAGO|PAGO RECIBIDO|PAGO NACIONAL TAR|AVANCE A CUENTA|CARGA (DE )?SALDO|RECARGA MERCADO PAGO|INGRESO DE DINERO|BANCHILE CORREDORES|FINTUAL|RESCATE|APORTE A FONDO/;
   const INGRESO = /REMUNERAC|SUELDO|HONORARIO|LIQUIDACION|VANTRUST/;
 
   function sugerir(glosa, monto) {

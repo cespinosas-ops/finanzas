@@ -1,5 +1,5 @@
 // Guarda la app en el teléfono para que abra aunque no haya señal.
-const CACHE = "finanzas-v1";
+const CACHE = "finanzas-v2";
 const SHELL = ["./", "index.html", "app.js", "lectores.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 const CDN = [
   "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js",
