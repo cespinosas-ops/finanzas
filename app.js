@@ -398,6 +398,8 @@ function viewMes() {
   h += `</div></section>`;
   // Lo que viene
   h += `<section class="card"><h2>Lo que viene</h2>${viewLoQueViene()}</section>`;
+  const hm = hormigasEn(ym + "-01", finMes(ym));
+  if (hm.length) h += `<button class="card" style="text-align:left;flex-direction:row;align-items:center" data-act="an" data-k="hormiga"><div class="grow"><div class="eyebrow">Gasto hormiga</div><div class="row between"><h2>${fmt(sum(hm))}</h2><span class="small muted">${hm.length} compras bajo ${fmtK(umbralH())}</span></div></div>${chev}</button>`;
   const rr = raros(ym);
   h += `<section class="card"><h2>Lo raro del mes</h2>${rr.length ? `<div class="list">${rr.map((x) => x.m ? `<button class="li" data-act="editMov" data-id="${x.m.id}"><span class="t small" style="white-space:normal">${esc(x.txt)}</span>${chev}</button>` : `<div class="li"><span class="t small">${esc(x.txt)}</span></div>`).join("")}</div>` : `<p class="empty">Nada fuera de lo normal.</p>`}</section>`;
   const meta = metaActiva(); if (meta) h += viewMetaMini(meta);
@@ -673,11 +675,11 @@ const kpi = (t, v, cls, sub) => `<div class="kpi"><span class="tiny muted">${t}<
 const insight = (txt) => `<div class="li" style="align-items:flex-start"><span class="dot" style="background:var(--accent);margin-top:7px"></span><span class="t small" style="white-space:normal">${txt}</span></div>`;
 
 function viewAnalisis() {
-  const tabs = [["resumen", "Resumen"], ["historial", "Historial"], ["ciclos", "Ciclos"], ["comparar", "Comparar"], ["patrimonio", "Patrimonio"]];
+  const tabs = [["resumen", "Resumen"], ["historial", "Historial"], ["ciclos", "Ciclos"], ["comparar", "Comparar"], ["hormiga", "Hormiga"], ["patrimonio", "Patrimonio"]];
   const sel = S.an || "resumen";
-  let h = `<div class="seg" style="overflow-x:auto">${tabs.map(([k, v]) => `<button data-act="an" data-k="${k}" aria-pressed="${sel === k}">${v}</button>`).join("")}</div>`;
+  let h = `<div class="seg" style="display:grid;grid-template-columns:repeat(3,1fr)">${tabs.map(([k, v]) => `<button data-act="an" data-k="${k}" aria-pressed="${sel === k}">${v}</button>`).join("")}</div>`;
   if (!primerDato() && sel !== "patrimonio") return h + `<section class="card"><p class="empty">Cuando importes tus primeras cartolas aquí aparecen tus números.</p></section>`;
-  return h + ({ resumen: anResumen, historial: anHistorial, ciclos: anCiclos, comparar: anComparar, patrimonio: anPatrimonio }[sel] || anResumen)();
+  return h + ({ resumen: anResumen, historial: anHistorial, ciclos: anCiclos, comparar: anComparar, hormiga: anHormiga, patrimonio: anPatrimonio }[sel] || anResumen)();
 }
 
 function anResumen() {
@@ -686,7 +688,7 @@ function anResumen() {
   const g = gastosEn(ym + "-01", finMes(ym)), t = totales(ym);
   const diario = sum(g) / dias;
   const compras = movsMes(ym).filter((m) => activo(m) && m.monto < 0);
-  const hormiga = compras.filter((m) => -clp(m) < 5000);
+  const hormiga = hormigasEn(ym + "-01", finMes(ym));
   const fijos = cobrosFijos().reduce((s, f) => s + f.monto, 0);
   const conGasto = new Set(g.map((x) => x.f));
   let sinGasto = 0; for (let d = 1; d <= dias; d++) if (!conGasto.has(`${ym}-${pad(d)}`)) sinGasto++;
@@ -702,7 +704,7 @@ function anResumen() {
     ${actual ? kpi("Proyección del mes", fmt(proy), proy > presTotal() && presTotal() ? "bad" : "", presTotal() ? "presupuesto " + fmtK(presTotal()) : "a tu ritmo normal") : kpi("Total del mes", fmt(t.gasto))}
     ${kpi("Tasa de ahorro", ahorro == null ? "sin ingresos" : Math.round(ahorro * 100) + "%", ahorro != null && ahorro < 0 ? "bad" : "in", "de lo que entró")}
     ${kpi("Compras", compras.length, "", `ticket promedio ${fmt(compras.length ? sum(compras.map((m) => ({ v: -clp(m) }))) / compras.length : 0)}`)}
-    ${kpi("Gasto hormiga", fmt(sum(hormiga.map((m) => ({ v: -clp(m) })))), "", `${hormiga.length} compras bajo $5.000`)}
+    <button class="kpi" style="border:0;text-align:left;font:inherit;color:inherit" data-act="an" data-k="hormiga"><span class="tiny muted">Gasto hormiga ›</span><b>${fmt(sum(hormiga))}</b><span class="tiny muted">${hormiga.length} compras bajo ${fmtK(umbralH())}</span></button>
     ${kpi("Días sin gastar", sinGasto, "", `de ${dias}`)}
   </div></section>`;
   const ins = [];
@@ -805,6 +807,54 @@ function estacional() {
   const d0 = primerDato(), cur = ymOf(today());
   for (let ym = ymOf(d0); ym < cur; ym = addM(ym, 1)) { s[+ym.slice(5) - 1] += sum(gastosEn(ym + "-01", finMes(ym))); n[+ym.slice(5) - 1]++; }
   return barsSVG(s.map((v, i) => ({ l: MES[i].slice(0, 1).toUpperCase(), a: n[i] ? v / n[i] : 0 })), { label: "Gasto por mes del año" });
+}
+
+/* Gastos hormiga: compras chicas y frecuentes que no son cobros fijos ni cuotas */
+const umbralH = () => +S.aj.hormiga || 5000;
+function hormigasEn(desde, hasta) {
+  const fijos = new Set(cobrosFijos().map((f) => L.norm(f.nombre)));
+  const out = [];
+  for (const m of movsList()) {
+    if (!activo(m) || !m.fecha || m.fecha < desde || m.fecha > hasta || m.monto >= 0 || m.cuotas || m.partes) continue;
+    const v = -clp(m); if (v >= umbralH()) continue;
+    const c = m.estado === "pendiente" ? null : m.cat;
+    if (c && (/^(transf|subs|ingresos)\b/.test(c) || catTipo(c) !== "gasto")) continue;
+    if (fijos.has(L.norm(nombreMov(m))) || m.fijo === true) continue;
+    out.push({ f: m.fecha, v, cat: c, m, n: nombreMov(m) });
+  }
+  return out;
+}
+function anHormiga() {
+  const ym = S.mes, actual = ym === ymOf(today()), y = +ym.slice(0, 4), mo = +ym.slice(5);
+  const dias = actual ? +today().slice(8) : lastDay(y, mo);
+  const hs = hormigasEn(ym + "-01", finMes(ym)), tot = sum(hs), gTot = totales(ym).gasto;
+  const serie = []; for (let i = 5; i >= 0; i--) { const m2 = addM(ym, -i); serie.push({ l: mesCorto(m2), a: sum(hormigasEn(m2 + "-01", finMes(m2))), hl: i === 0 }); }
+  const prev3 = serie.slice(2, 5).map((x) => x.a).filter((x) => x > 0);
+  const prom = prev3.length ? prev3.reduce((a, b) => a + b, 0) / prev3.length : tot;
+  const alAnio = prom * 12;
+  const meta = metaActiva(), mc = meta ? metaCalc(meta) : null;
+  let h = monthNav();
+  h += `<div class="row wrapr small"><span class="muted">Cuento como hormiga lo que cuesta menos de</span>${[3000, 5000, 8000, 10000].map((u) => `<button class="chip" data-act="umbralH" data-v="${u}" aria-pressed="${umbralH() === u}">${fmtK(u)}</button>`).join("")}</div>`;
+  h += `<section class="card"><div class="eyebrow">Gasto hormiga de ${MES[mo - 1]}</div><div class="big">${fmt(tot)}</div>
+    <div class="kpis">${kpi("Compras", hs.length)}${kpi("Promedio", fmt(hs.length ? tot / hs.length : 0))}${kpi("Del total", gTot ? pct(tot, gTot) + "%" : "")}</div>
+    <p class="small muted">Son ${fmt(tot / dias)} al día${hs.length ? (hs.length >= dias ? `, ${(hs.length / dias).toFixed(1).replace(".", ",")} compras chicas por día` : `, una compra chica cada ${Math.round(dias / hs.length)} días`) : ""}.</p>
+    ${barsSVG(serie, { label: "Gasto hormiga por mes" })}</section>`;
+  if (prom > 0) h += `<section class="card"><h2>En un año</h2><p>A tu ritmo de los últimos meses, lo hormiga suma cerca de <b>${fmt(alAnio)}</b> al año.</p>${mc && mc.obj ? `<p class="small muted">Eso es el ${pct(alAnio, mc.obj)}% de tu meta ${esc(meta.nombre)}.${mc.falta ? ` Si cortaras la mitad, juntarías ${fmt(prom / 2)} más al mes para el viaje.` : ""}</p>` : ""}</section>`;
+  // Dónde: lugares que más suman, con cuánto ahorrarías yendo la mitad de veces
+  const lug = {}; hs.forEach((x) => { lug[x.n] = lug[x.n] || { n: 0, v: 0, cat: x.cat }; lug[x.n].n++; lug[x.n].v += x.v; });
+  const top = Object.entries(lug).sort((a, b) => b[1].v - a[1].v);
+  h += `<section class="card"><h2>Dónde se te va</h2>${top.length ? `<div class="list">${top.slice(0, 10).map(([k, x]) => `<div class="li"><span class="dot" style="background:${x.cat ? catColor(x.cat) : "var(--line)"}"></span><span class="t"><div>${esc(k)}</div><div class="tiny muted" style="white-space:normal">${x.n} ${x.n === 1 ? "vez" : "veces"} · ${fmt(x.v / x.n)} cada una${x.n >= 4 ? ` · yendo la mitad ahorras ${fmt(x.v / 2)}` : ""}</div></span><span class="num">${fmt(x.v)}</span></div>`).join("")}</div>` : `<p class="empty">No hay gastos hormiga este mes.</p>`}</section>`;
+  // Por categoría
+  const pc = {}; hs.forEach((x) => { const k = x.cat || "_"; pc[k] = (pc[k] || 0) + x.v; });
+  const pcs = Object.entries(pc).sort((a, b) => b[1] - a[1]);
+  if (pcs.length) h += `<section class="card"><h2>Por categoría</h2><div class="list">${pcs.map(([k, v]) => `<div class="li" style="flex-wrap:wrap"><span class="dot" style="background:${k === "_" ? "var(--line)" : catColor(k)}"></span><span class="t"><div>${k === "_" ? "Por clasificar" : esc(catName(k, true))}</div></span><span class="num">${fmt(v)}</span><div style="flex-basis:100%"><div class="bar"><i style="width:${tot ? (v / tot) * 100 : 0}%;background:${k === "_" ? "var(--line)" : catColor(k)}"></i></div></div></div>`).join("")}</div></section>`;
+  // Cuándo: día de la semana con los últimos 3 meses para que sea estable
+  const hs3 = hormigasEn(addM(ym, -2) + "-01", finMes(ym));
+  const dw = Array(7).fill(0); hs3.forEach((x) => (dw[dowOf(x.f)] += x.v));
+  if (hs3.length >= 10) { const mx = dw.indexOf(Math.max(...dw)); h += `<section class="card"><h2>Qué día caes más</h2><p class="tiny muted">Últimos 3 meses</p>${barsSVG(dw.map((v, i) => ({ l: DOW[i].slice(0, 2), a: v, hl: i === mx })), { label: "Hormiga por día de la semana" })}<p class="small">El <b>${DOW[mx].toLowerCase()}</b> es tu día más hormiga.</p></section>`; }
+  h += `<section class="card"><h2>Cada compra</h2><div class="list">${hs.sort((a, b) => (a.f < b.f ? 1 : -1)).map((x) => movLi(x.m)).join("") || `<p class="empty">Nada este mes.</p>`}</div></section>`;
+  h += `<p class="tiny muted">No cuento cobros fijos, suscripciones, cuotas ni transferencias.</p>`;
+  return h;
 }
 
 function anComparar() {
@@ -1011,7 +1061,8 @@ const ACT = {
   login: async () => { if (!sb) return; const redirect = location.origin + location.pathname; const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: redirect, queryParams: { prompt: "select_account" } } }); if (error) $("#loginMsg").textContent = "No se pudo abrir Google: " + error.message; },
   logout: async () => { await flush(); if (Object.keys(outbox).length) { toast("Hay cambios sin subir. Conéctate antes de salir."); return; } await sb.auth.signOut(); LS.set("fin.cache", null); location.reload(); },
   tcSel: (el) => { S.tcSel = el.dataset.id; render(); },
-  an: (el) => { S.an = el.dataset.k; render(); },
+  an: (el) => { S.an = el.dataset.k; if (S.tab !== "analisis") S.tab = "analisis"; render(); window.scrollTo(0, 0); },
+  umbralH: (el) => { S.aj.hormiga = +el.dataset.v; save("aj", S.aj); render(); },
   anPer: (el) => { S.anPer = el.dataset.k; render(); },
   irMes: (el) => { S.mes = el.dataset.ym; go("mes"); },
   copiar: async (el) => { try { await navigator.clipboard.writeText(el.dataset.txt); toast("Copiado"); } catch (e) { toast("No pude copiar, mantén apretado el texto"); } },
@@ -1520,7 +1571,7 @@ if ("serviceWorker" in navigator && !DEMO) window.addEventListener("load", () =>
 
 /* ============ Aviso de versión nueva ============ */
 // version.json cambia con cada actualización; si no calza con la que está abierta, ofrece recargar
-const VERSION = "2026-11-04.6";
+const VERSION = "2026-11-04.7";
 const ssGet = (k) => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
 const ssSet = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} };
 let ultimaRevision = 0;
