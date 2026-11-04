@@ -190,6 +190,14 @@ function partes(m) {
   return [{ cat: m.estado === "pendiente" ? null : m.cat, monto: clp(m) }];
 }
 function tipoParte(p, m) { if (p.cat) return catTipo(p.cat) || (p.monto < 0 ? "gasto" : "ingreso"); return p.monto < 0 ? "gasto" : "ingreso"; }
+// Más reciente primero: fecha, después hora (las de Wallet la traen), después el orden de la cartola
+function cmpReciente(a, b) {
+  if (a.fecha !== b.fecha) return a.fecha < b.fecha ? 1 : -1;
+  const ta = a.ts || "", tb = b.ts || "";
+  if (ta || tb) { if (!ta) return 1; if (!tb) return -1; if (ta !== tb) return ta < tb ? 1 : -1; }
+  const oa = a.orden ?? -1, ob = b.orden ?? -1; if (oa !== ob) return ob - oa;
+  return (b.importado || "") > (a.importado || "") ? 1 : (b.importado || "") < (a.importado || "") ? -1 : 0;
+}
 const movsList = () => Object.values(S.mov);
 const movsMes = (ym) => movsList().filter((m) => m.fecha && m.fecha.startsWith(ym));
 const esTransf = (m) => /^TRASPASO (A|DE)\s*:|TRANSFERENCIA|TRANSF\.? (A|DE)\b|^TEF\b/.test(L.norm(m.glosa || ""));
@@ -370,7 +378,7 @@ function viewMes() {
   for (const r of alerts) { const v = t.porRoot[r.id] || 0; const over = v >= r.presupuesto; h += `<div class="banner" style="${over ? "background:var(--bad-soft)" : ""}"><div class="grow">${over ? "Te pasaste" : "Vas en el " + pct(v, r.presupuesto) + "%"} del presupuesto de <b>${esc(r.nombre)}</b>: ${fmt(v)} de ${fmt(r.presupuesto)}.</div></div>`; }
   h += `<section class="card"><div class="cardhead"><h2>Entra versus sale</h2><span class="tiny muted"><span style="color:var(--accent)">■</span> entró <span style="color:var(--bad)">■</span> salió</span></div>${barsScroll(serieMeses(), { dos: true, label: "Ingresos y gastos por mes" })}</section>`;
   // Últimos movimientos de todas las cuentas
-  const ult = movsList().filter((m) => m.fecha).sort((a, b) => (a.fecha < b.fecha ? 1 : -1)).slice(0, 5);
+  const ult = movsList().filter((m) => m.fecha).sort(cmpReciente).slice(0, 5);
   if (ult.length && actualMes(ym)) h += `<section class="card"><div class="cardhead"><h2>Últimos movimientos</h2><button class="linkbtn" data-act="sub" data-sub="movs">Ver cartola</button></div><div class="list">${ult.map((m) => movLi(m, { sub: [diaLabel(m.fecha), cuentaLabel(m.cuenta_id)].join(" · ") })).join("")}</div></section>`;
   // Cuentas
   const cs = Object.values(S.cuentas).filter((c) => !c.archivada).sort((a, b) => (a.orden ?? 9) - (b.orden ?? 9));
@@ -663,7 +671,7 @@ function viewMovs() {
     (!fc || m.cuenta_id === fc) &&
     (!ft || (ft === "gastos" ? m.monto < 0 && activo(m) : ft === "ingresos" ? m.monto > 0 && activo(m) : ft === "pend" ? m.estado === "pendiente" : ft === "interno" ? m.estado === "interno" : ft === "ignorado" ? m.estado === "ignorado" : true)) &&
     (!q || L.norm(nombreMov(m) + " " + m.glosa + " " + catName(m.cat) + " " + cuentaLabel(m.cuenta_id)).includes(q)));
-  list.sort((a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : (b.importado || "") < (a.importado || "") ? -1 : 1));
+  list.sort(cmpReciente);
   const total = list.length; list = list.slice(0, S.movN || 150);
   const cs = Object.values(S.cuentas).filter((c) => !c.archivada).sort((a, b) => (a.orden ?? 9) - (b.orden ?? 9));
   const chip = (act, val, cur, label) => `<button class="chip" data-act="${act}" data-v="${val}" aria-pressed="${cur === val}">${label}</button>`;
@@ -1460,7 +1468,7 @@ function doImport() {
   const I = S.imp; if (!I) return;
   const antes = totales(ymOf(today()));
   let nuevos = 0, conc = 0, auto = 0;
-  for (const f of I.filas) {
+  for (const [i, f] of I.filas.entries()) {
     if (!f.sel) continue;
     if (f.st === "wallet" && f.gemelo && S.mov[f.gemelo]) {
       const m = S.mov[f.gemelo];
@@ -1468,7 +1476,7 @@ function doImport() {
       if (f.cuotas) m.cuotas = f.cuotas;
       save("mov", m); conc++; continue;
     }
-    const m = clasificar({ id: uid(), cuenta_id: I.cuenta, fecha: f.fecha, fecha_compra: f.fecha_compra, monto: f.monto, huella: f.huella, glosa: f.glosa, moneda: f.moneda === "USD" ? "USD" : undefined, cuotas: f.cuotas, origen: I.origen || "cartola", importado: new Date().toISOString() });
+    const m = clasificar({ id: uid(), cuenta_id: I.cuenta, fecha: f.fecha, fecha_compra: f.fecha_compra, monto: f.monto, huella: f.huella, glosa: f.glosa, moneda: f.moneda === "USD" ? "USD" : undefined, cuotas: f.cuotas, orden: f.idx ?? i, origen: I.origen || "cartola", importado: new Date().toISOString() });
     if (m.estado !== "pendiente") auto++;
     save("mov", m); nuevos++;
   }
@@ -1499,6 +1507,8 @@ function doImport() {
 }
 
 /* ============ Lo que llega desde los Atajos ============ */
+// Hora de la compra en formato único (UTC), para ordenar bien aunque llegue tarde desde la cola
+function tsDe(fecha, creada) { const a = new Date(fecha || ""); if (!isNaN(a) && /\d{1,2}:\d{2}/.test(fecha || "")) return a.toISOString(); const b = new Date(creada); return isNaN(b) ? new Date().toISOString() : b.toISOString(); }
 async function cargarEntrantes() {
   if (!sb || !S.user) return;
   const { data, error } = await sb.from("fin_entrantes").select("id,tipo,data,created_at").eq("procesado", false).order("created_at");
@@ -1512,7 +1522,7 @@ async function cargarEntrantes() {
     const cta = /BICE/.test(t) ? (tc ? tc.id : "bice") : /MERCADO/.test(t) ? "mp" : /CHILE|EDWARDS/.test(t) ? "bch_vista" : S.aj.walletCuenta && S.cuentas[S.aj.walletCuenta] ? S.aj.walletCuenta : "bch_vista";
     const hm = String(d.fecha || "").match(/(\d{1,2}):(\d{2})/) || String(r.created_at).match(/T(\d{2}):(\d{2})/);
     const id = "w-" + r.id;
-    if (!S.mov[id]) save("mov", clasificar({ id, cuenta_id: cta, fecha: L.parseFecha(d.fecha) || String(r.created_at).slice(0, 10), monto: -Math.abs(v), moneda: L.monedaDe(d.monto) === "USD" ? "USD" : undefined, glosa: d.comercio || d.nombre || "Compra Wallet", origen: "wallet", tarjeta: d.tarjeta, hora: hm ? +hm[1] : undefined }));
+    if (!S.mov[id]) save("mov", clasificar({ id, cuenta_id: cta, fecha: L.parseFecha(d.fecha) || String(r.created_at).slice(0, 10), monto: -Math.abs(v), moneda: L.monedaDe(d.monto) === "USD" ? "USD" : undefined, glosa: d.comercio || d.nombre || "Compra Wallet", origen: "wallet", tarjeta: d.tarjeta, hora: hm ? +hm[1] : undefined, ts: tsDe(d.fecha, r.created_at) }));
     marcarProcesado(r.id);
   }
   render();
@@ -1664,7 +1674,7 @@ if ("serviceWorker" in navigator && !DEMO) window.addEventListener("load", () =>
 
 /* ============ Aviso de versión nueva ============ */
 // version.json cambia con cada actualización; si no calza con la que está abierta, ofrece recargar
-const VERSION = "2026-11-04.11";
+const VERSION = "2026-11-04.12";
 const ssGet = (k) => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
 const ssSet = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} };
 let ultimaRevision = 0;
