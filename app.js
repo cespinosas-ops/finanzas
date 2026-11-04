@@ -960,6 +960,7 @@ const TITLES = { mes: "Mi mes", gastos: "Gastos", bandeja: "Por clasificar", tar
 const SUBT = { importar: "Importar", meta: "Meta de ahorro", presupuesto: "Presupuesto", categorias: "Categorías", reglas: "Reglas", cuentas: "Cuentas", atajos: "Atajos", movs: "Movimientos" };
 function render() {
   const main = $("#main");
+  $("header.top").hidden = !!S.needLogin;
   if (S.needLogin) { $("#tabs").hidden = true; $("#addBtn").hidden = true; main.innerHTML = viewLogin(); $("#overlay").innerHTML = ""; return; }
   $("#tabs").hidden = false; $("#addBtn").hidden = false;
   if (!S.ready) { main.innerHTML = `<p class="empty">Cargando…</p>`; return; }
@@ -1467,7 +1468,7 @@ if ("serviceWorker" in navigator && !DEMO) window.addEventListener("load", () =>
 
 /* ============ Aviso de versión nueva ============ */
 // version.json cambia con cada actualización; si no calza con la que está abierta, ofrece recargar
-const VERSION = "2026-11-04.2";
+const VERSION = "2026-11-04.3";
 async function revisarVersion() {
   if (DEMO || !navigator.onLine) return;
   try {
