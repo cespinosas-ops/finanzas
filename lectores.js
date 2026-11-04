@@ -7,8 +7,10 @@
   const MESES = { ene: 1, feb: 2, mar: 3, abr: 4, may: 5, jun: 6, jul: 7, ago: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12,
     jan: 1, apr: 4, aug: 8, dec: 12 };
 
+  const ENT = { aacute: "á", eacute: "é", iacute: "í", oacute: "ó", uacute: "ú", ntilde: "ñ", Aacute: "Á", Eacute: "É", Iacute: "Í", Oacute: "Ó", Uacute: "Ú", Ntilde: "Ñ", uuml: "ü", amp: "&" };
+  const deent = (s) => String(s == null ? "" : s).replace(/&([A-Za-z]+);/g, (m, k) => ENT[k] || m);
   function norm(s) {
-    return String(s == null ? "" : s).normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/\s+/g, " ").trim();
+    return deent(s).normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/\s+/g, " ").trim();
   }
   const pad = (n) => String(n).padStart(2, "0");
   const iso = (y, m, d) => `${y}-${pad(m)}-${pad(d)}`;
@@ -94,7 +96,7 @@
   function detectarBanco(texto, archivo) {
     const s = norm((archivo || "") + " | " + String(texto || "").slice(0, 6000));
     // Gana el banco que aparece primero (nombre del archivo y encabezado), no el que sale en una glosa.
-    const pats = { mp: /MERCADO ?PAGO|RELEASE_DATE|TRANSACTION_NET_AMOUNT/, bice: /(?:^|[^A-Z])BICE(?:[^A-Z]|$)/, bch: /BANCO ?DE ?CHILE|BANCOCHILE|BANCO EDWARDS|(?:^|[^A-Z])BCH(?:[^A-Z]|$)|BANCHILE/ };
+    const pats = { mp: /MERCADO ?PAGO|RELEASE_DATE|TRANSACTION_NET_AMOUNT/, bice: /(?:^|[^A-Z])BICE(?:[^A-Z]|$)/, bch: /BANCO ?DE ?CHILE|BANCOCHILE|BANCO EDWARDS|DETALLE CARTOLA HISTORICA|CANAL O SUCURSAL|(?:^|[^A-Z])BCH(?:[^A-Z]|$)|BANCHILE/ };
     let banco = null, best = Infinity;
     for (const [k, re] of Object.entries(pats)) { const m = s.match(re); if (m && m.index < best) { best = m.index; banco = k; } }
     const credito = /TARJETA DE CREDITO|ESTADO DE CUENTA|CUPO (TOTAL|UTILIZADO|DISPONIBLE)|MONTO (TOTAL )?FACTURADO|PAGAR HASTA|MONTO MINIMO|NO FACTURAD/.test(s);
@@ -140,8 +142,11 @@
   /* Filas de una planilla (array de arrays) a movimientos. */
   function leerTabla(rows, opts) {
     opts = opts || {};
-    const ref = opts.ref || new Date();
     rows = (rows || []).filter((r) => r && r.some((c) => c !== null && c !== undefined && String(c).trim() !== ""));
+    let ref = opts.ref;
+    // Si la cartola trae fecha de emisión, los "dd/mm" sin año se leen contra esa fecha
+    if (!ref) for (const r of rows.slice(0, 30)) { const i = r.findIndex((c) => /FECHA DE EMISION|FECHA EMISION/.test(norm(c))); if (i >= 0) { const v = r.slice(i + 1).find((c) => String(c).trim()); const d = v != null ? parseFecha(v) : null; if (d) { ref = new Date(d + "T12:00:00"); break; } } }
+    ref = ref || new Date();
     const h = findHeader(rows);
     const out = [];
     if (h) {
@@ -158,7 +163,7 @@
         }
         if (monto == null && idx.monto != null) monto = parseMonto(r[idx.monto]);
         if (monto == null || monto === 0) continue;
-        let glosa = idx.desc != null ? String(r[idx.desc] == null ? "" : r[idx.desc]).trim() : "";
+        let glosa = idx.desc != null ? deent(r[idx.desc]).trim() : "";
         if (!glosa) glosa = r.filter((c, j) => j !== idx.fecha && typeof c === "string" && !isAmountCell(c)).join(" ").trim();
         const fila = { fecha, glosa, monto, moneda: monedaDe(idx.monto != null ? r[idx.monto] : "") };
         if (idx.saldo != null) { const s = parseMonto(r[idx.saldo]); if (s != null) fila.saldo = s; }
@@ -299,56 +304,71 @@
   const PREFIJOS = /^(COMPRA(S)?( NACIONAL| NAC| INTERNACIONAL| INT| EN)?|PAGO( EN| DE)?|CARGO( POR)?|POS|TRX|TRANSACCION|COMPRA DEBITO|COMPRA CON TARJETA|COMPRA TARJETA|DEBITO|PAT)\s+/;
   function limpiarGlosa(g) {
     let s = norm(g).replace(BASURA, " ").replace(/\s+/g, " ").trim();
+    const tr = s.match(/^TRASPASO (A|DE)\s*:\s*(.+)$/);
+    if (tr) return (tr[1] === "A" ? "Transferencia a " : "Transferencia de ") + titulo(tr[2]).slice(0, 30);
+    s = s.replace(/^(PAGO|COMPRA|CARGO)\s*:\s*/, "").replace(/^(DL|DD|FS|FUDO|TUU|PAYSCAN|DLOCAL|MP)\s?\*\s?/, "");
     s = s.replace(/^(MERPAGO|MERCADOPAGO)\s?\*?\s?(?=[A-Z])/, "").replace(/^(MP|PAYU|DLO|SUMUP|FLOW|KHIPU|PAYPAL|TBK|WEBPAY|SQ|GETNET|KLAP)\s?\*\s?/, "");
     for (let i = 0; i < 2; i++) s = s.replace(PREFIJOS, "");
     s = s.replace(/\b(SANTIAGO|STGO|LAS CONDES|PROVIDENCIA|VITACURA|LO BARNECHEA|NUNOA|CL|CHL|CHILE|US|USA|IE|GB)\b\.?/g, " ");
     s = s.replace(/\b\d{1,2}\/\d{2}\b/g, " ").replace(/[*#_]/g, " ").replace(/\b\d{3,}\b/g, " ").replace(/\s+/g, " ").trim();
     if (!s) s = norm(g);
+    return titulo(s).slice(0, 40);
+  }
+  function titulo(s) {
     const small = new Set(["DE", "DEL", "LA", "EL", "Y", "EN", "LOS", "LAS"]);
-    return s.toLowerCase().split(" ").map((w, i) => (i > 0 && small.has(w.toUpperCase()) ? w : w.charAt(0).toUpperCase() + w.slice(1))).join(" ").slice(0, 40);
+    return norm(s).toLowerCase().split(" ").map((w, i) => (i > 0 && small.has(w.toUpperCase()) ? w : w.charAt(0).toUpperCase() + w.slice(1))).join(" ");
   }
 
   /* Parte de la glosa que sirve como regla. */
   function patronDe(g) {
     let s = norm(g).replace(BASURA, " ").replace(/\b\d{1,2}\/\d{2}\b/g, " ").replace(/\b\d+\b/g, " ").replace(/\b(SANTIAGO|STGO|CL|CHL|CHILE)\b/g, " ").replace(/\s+/g, " ").trim();
-    s = s.replace(PREFIJOS, "");
+    if (/^TRASPASO (A|DE)\s*:/.test(s)) return s.replace(/\s*:\s*/, ":").split(" ").slice(0, 4).join(" ");
+    s = s.replace(/^(PAGO|COMPRA|CARGO)\s*:\s*/, "").replace(PREFIJOS, "");
     return s.split(" ").slice(0, 3).join(" ").trim() || norm(g).slice(0, 20);
   }
 
   /* Comercios conocidos en Chile para sugerir categoría. */
   const DICC = [
-    [/\b(LIDER|JUMBO|UNIMARC|SANTA ISABEL|TOTTUS|ACUENTA|EKONO|MAYORISTA 10|ALVI|OK MARKET|SPID|CORNERSHOP)\b/, "comida.super"],
-    [/\b(STARBUCKS|JUAN VALDEZ|DUNKIN|COFFEE|CAFE|CAFETERIA|TOSTADURIA|BARISTA|COSTUMBRES DEL CAFE)\b/, "comida.cafe"],
-    [/\b(RAPPI|PEDIDOSYA|PEDIDOS YA|UBER ?EATS|JUSTO|DIDI FOOD)\b/, "comida.delivery"],
-    [/\b(MCDONALD|BURGER KING|KFC|DOMINO|PAPA JOHN|TELEPIZZA|SUSHI|JUAN MAESTRO|DOGGIS|TARRAGONA|SUBWAY|STREETBURGER|NIU SUSHI|LITTLE CAESARS|WENDY|PIZZA|RESTAURANT|RESTOBAR|EMPANADA|FUENTE|SANGUCHE|POKE|TACO)\b/, "comida.fuera"],
+    [/\b(BETANO|BETSSON|JUGABET|COOLBET|ESTELARBET|BETWARRIOR|1XBET|DORADOBET|POLLA|LOTERIA|KINO)\b/, "ocio.apuestas"],
+    [/\b(VETERINARIA|VET|PETCO|BRAVO PET|SUPER ZOO|SUPERZOO|SZOO|TODOMASCOTAS|PET ?SHOP)\b/, "mascotas.general"],
+    [/\b(LIDER|JUMBO|UNIMARC|SANTA ISABEL|STA\. ISABEL|TOTTUS|ACUENTA|EKONO|MAYORISTA 10|ALVI|OK MARKET|SPID|CORNERSHOP|SUPERMERCADO|FRUTERIA|KIOSCLUB)\b/, "comida.super"],
+    [/\b(STARBUCKS|JUAN VALDEZ|DUNKIN|COFFEE|CAFE|CAFETERIA|TOSTADURIA|BARISTA|COSTUMBRES DEL CAFE|SBX)\b/, "comida.cafe"],
+    [/\b(RAPPI|PEDIDOSYA|PEDIDOS YA|UBER ?EATS?|JUSTO|DIDI FOOD|DOORDASH)\b/, "comida.delivery"],
+    [/\b(MCDONALD|BURGER KING|KFC|DOMINO|PAPA JOHN|TELEPIZZA|SUSHI|JUAN MAESTRO|DOGGIS|TARRAGONA|SUBWAY|STREETBURGER|NIU SUSHI|LITTLE CAESARS|WENDY|PIZZA|RESTAURANT|RESTOBAR|EMPANADA|FUENTE|SANGUCHE|POKE|TACO|MC DONALDS|ACAI|HELADERIA|GELATERI\w*|CHURROS|SAKURA)\b/, "comida.fuera"],
+    [/\b(LIME|WHOOSH|BIRD|MOVO|BICI ?LIBRE)\b/, "transporte.scooter"],
     [/\b(UBER|CABIFY|DIDI|BEAT|TAXI)\b/, "transporte.uber"],
-    [/\b(COPEC|SHELL|ARAMCO|PETROBRAS|ENEX|TERPEL)\b/, "transporte.bencina"],
+    [/\b(COPEC|SHELL|ARAMCO|PETROBRAS|ENEX|TERPEL|SERVICENTROS?)\b/, "transporte.bencina"],
     [/\b(AUTOPISTA|COSTANERA|VESPUCIO|AUTOPASE|TAG|RUTA DEL MAIPO|AUTOPISTA CENTRAL)\b/, "transporte.tag"],
-    [/\b(ESTACIONAMIENTO|PARKING|SABA|CENTRAL PARKING)\b/, "transporte.estac"],
+    [/\b(ESTACIONAMIENTO|PARKING|SABA|CENTRAL PARKING|SENAL PARKING)\b/, "transporte.estac"],
     [/\b(METRO|BIP|RED MOVILIDAD|TRANSANTIAGO)\b/, "transporte.micro"],
-    [/\b(NETFLIX|SPOTIFY|APPLE\.COM|APPLE COM|ICLOUD|DISNEY|HBO|MAX|YOUTUBE|PRIME VIDEO|AMAZON PRIME|CHATGPT|OPENAI|ANTHROPIC|CLAUDE|PLAYSTATION|XBOX|STEAM|NINTENDO|PARAMOUNT|CRUNCHYROLL|DUOLINGO|NOTION|GOOGLE ONE|GOOGLE \*)\b/, "subs.apps"],
+    [/\b(NETFLIX|SPOTIFY|APPLE\.COM|APPLE COM|ICLOUD|DISNEY|HBO|MAX|YOUTUBE|PRIME VIDEO|AMAZON PRIME|CHATGPT|OPENAI|ANTHROPIC|CLAUDE|PARAMOUNT|CRUNCHYROLL|DUOLINGO|NOTION|GOOGLE ONE|GOOGLE \*|GOOGLE PLAY|AUDIBLE|KINDLE|EXPRESSVPN|NORDVPN|DIARIO F\w*)\b/, "subs.apps"],
+    [/\b(PLAYSTATION|XBOX|STEAM|NINTENDO|SUPERCELL|EPIC GAMES|RIOT)\w*/, "ocio.juegos"],
     [/\b(ENTEL|MOVISTAR|WOM|CLARO|VTR|GTD|MUNDO PACIFICO)\b/, "subs.celular"],
-    [/\b(FARMACIA|CRUZ VERDE|SALCOBRAND|AHUMADA|DR SIMI)\b/, "salud.farmacia"],
+    [/\b(FARMACIAS?|CRUZ ?VERDE|CRUZVE|SALCOBRAND|AHUMADA|DR SIMI|SOLUFAR)\b/, "salud.farmacia"],
+    [/\b(EASYCANCHA|PADEL|CLUB DE GOLF|TENIS|CANCHA)\b/, "salud.deporte"],
     [/\b(LIT FITNESS|SMARTFIT|SMART FIT|ENERGY|SPORTLIFE|PACIFIC FITNESS|GYM|CROSSFIT|DECATHLON)\b/, "salud.gym"],
     [/\b(CLINICA|MEGASALUD|INTEGRAMEDICA|REDSALUD|LABORATORIO|DENTAL|ISAPRE|FONASA|MEDICO)\b/, "salud.medico"],
     [/\b(FALABELLA|PARIS|RIPLEY|H&M|HYM|ZARA|NIKE|ADIDAS|NORTH FACE|PATAGONIA|LIPPI|DOITE|ROCKFORD)\b/, "compras.ropa"],
     [/\b(MERCADOLIBRE|MERCADO LIBRE|AMAZON|ALIEXPRESS|SHEIN|TEMU)\b/, "compras.otras"],
     [/\b(PC FACTORY|PCFACTORY|APPLE STORE|MACONLINE|SAMSUNG|SP DIGITAL|SPDIGITAL|ABCDIN|LA POLAR)\b/, "compras.tecnologia"],
-    [/\b(SODIMAC|EASY|HOMECENTER|IKEA|CASA IDEAS|CASAIDEAS)\b/, "compras.casa"],
+    [/\b(SODIMAC|EASY|HOMECENTER|IKEA|CASA IDEAS|CASAIDEAS|MINISO)\b/, "compras.casa"],
     [/\b(LATAM|SKY AIRLINE|JETSMART|COPA|AVIANCA|AEROMEXICO|AMERICAN AIR)\b/, "viajes.vuelos"],
     [/\b(AIRBNB|BOOKING|HOTEL|HOSTAL|HOSTEL|EXPEDIA)\b/, "viajes.aloja"],
-    [/\b(CINEMARK|CINEPLANET|CINE HOYTS|HOYTS|TICKETMASTER|PUNTOTICKET|PASSLINE|TICKETPLUS)\b/, "ocio.panoramas"],
+    [/\b(AIRALO|ESIM|HOLAFLY)\b/, "viajes.otros"],
+    [/\b(CINEMARK|CINEPLANET|CINE HOYTS|HOYTS|CINEPOLIS|TICKETMASTER|PUNTOTICKET|PASSLINE|TICKETPLUS)\b/, "ocio.panoramas"],
     [/\b(BAR|PUB|SCHOP|DISCOTHEQUE|BOTILLERIA|LICORERIA)\b/, "ocio.salidas"],
-    [/\b(UNIVERSIDAD DE CHILE|UCHILE|FEN|LIBRERIA|COPIAS|FOTOCOPIA|ANTARTICA)\b/, "u.material"],
+    [/\b(UNIVERSIDAD DE CHILE|UCHILE|U CHILE|U DE CHILE|FEN|LIBRERIA|COPIAS|FOTOCOPIA|ANTARTICA)\b/, "u.material"],
   ];
-  const INTERNO = /TRASPASO|TRANSFERENCIA A CUENTA PROPIA|TRANSF(ERENCIA)? (A|ENTRE) (MIS )?CUENTAS? PROPIAS?|PAGO (DE )?TARJETA|PAGO TC|PAGO TARJ|ABONO PAGO|PAGO RECIBIDO|PAGO NACIONAL TAR|AVANCE A CUENTA|CARGA (DE )?SALDO|RECARGA MERCADO PAGO|INGRESO DE DINERO|BANCHILE CORREDORES|FINTUAL|RESCATE|APORTE A FONDO/;
+  const INTERNO = /TRASPASO (A|DE)\s*:\s*CRISTOBAL (ANDRES )?ESPINOSA|TRASPASO A CUENTA PROPIA|TRANSFERENCIA A CUENTA PROPIA|TRANSF(ERENCIA)? (A|ENTRE) (MIS )?CUENTAS? PROPIAS?|PAGO (DE )?TARJETA|PAGO TC|PAGO TARJ|ABONO PAGO|PAGO RECIBIDO|PAGO NACIONAL TAR|AVANCE A CUENTA|CARGA (DE )?SALDO|RECARGA MERCADO PAGO|INGRESO DE DINERO|BANCHILE CORREDORES|FINTUAL|RESCATE|APORTE A FONDO/;
   const INGRESO = /REMUNERAC|SUELDO|HONORARIO|LIQUIDACION|VANTRUST/;
+  const REEMBOLSO = /AJUSTE COMPRA|DEVOLUCION|REVERSO|NOTA DE CREDITO/;
 
   function sugerir(glosa, monto) {
     const g = norm(glosa);
     if (INTERNO.test(g)) return { tipo: "interno" };
     if (monto > 0) {
       if (INGRESO.test(g)) return { tipo: "cat", cat: "ingresos.practica" };
+      if (REEMBOLSO.test(g)) return { tipo: "cat", cat: "ingresos.reembolsos" };
       return null;
     }
     for (const [re, cat] of DICC) if (re.test(g)) return { tipo: "cat", cat };

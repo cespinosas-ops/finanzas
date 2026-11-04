@@ -115,15 +115,16 @@ setInterval(flush, 20000);
 /* ============ Datos iniciales ============ */
 const DEF_CATS = [
   ["comida", "Comida", "#E07B39", "gasto", [["super", "Supermercado"], ["fuera", "Comida fuera"], ["cafe", "Café"], ["delivery", "Delivery"]]],
-  ["transporte", "Transporte", "#3D7FC1", "gasto", [["bencina", "Bencina"], ["uber", "Uber y taxis"], ["tag", "TAG y autopistas"], ["estac", "Estacionamiento"], ["micro", "Metro y micro"]]],
-  ["salud", "Salud y deporte", "#2E9A68", "gasto", [["gym", "Gimnasio"], ["farmacia", "Farmacia"], ["medico", "Médico"]]],
+  ["transporte", "Transporte", "#3D7FC1", "gasto", [["bencina", "Bencina"], ["uber", "Uber y taxis"], ["scooter", "Scooters"], ["tag", "TAG y autopistas"], ["estac", "Estacionamiento"], ["micro", "Metro y micro"]]],
+  ["salud", "Salud y deporte", "#2E9A68", "gasto", [["gym", "Gimnasio"], ["deporte", "Canchas y deportes"], ["farmacia", "Farmacia"], ["medico", "Médico"]]],
   ["subs", "Suscripciones", "#8A63D2", "gasto", [["apps", "Apps y streaming"], ["celular", "Celular e internet"]]],
-  ["ocio", "Ocio", "#D9548F", "gasto", [["salidas", "Salidas"], ["panoramas", "Panoramas"], ["juegos", "Juegos"]]],
+  ["ocio", "Ocio", "#D9548F", "gasto", [["salidas", "Salidas"], ["panoramas", "Panoramas"], ["juegos", "Juegos"], ["apuestas", "Apuestas"]]],
   ["compras", "Compras", "#C9A227", "gasto", [["ropa", "Ropa"], ["tecnologia", "Tecnología"], ["casa", "Casa"], ["otras", "Otras compras"]]],
   ["viajes", "Viajes", "#1FA2A6", "gasto", [["vuelos", "Vuelos"], ["aloja", "Alojamiento"], ["otros", "Gastos de viaje"]]],
   ["u", "Universidad", "#6B7B8C", "gasto", [["material", "Materiales"], ["otros", "Otros de la U"]]],
+  ["mascotas", "Mascotas", "#4F46E5", "gasto", [["general", "Comida y veterinaria"]]],
   ["regalos", "Regalos y otros", "#A0522D", "gasto", [["regalos", "Regalos"], ["otros", "Otros gastos"]]],
-  ["ingresos", "Ingresos", "#2F7A45", "ingreso", [["practica", "Práctica"], ["clases", "Clases particulares"], ["otros", "Otros ingresos"]]],
+  ["ingresos", "Ingresos", "#2F7A45", "ingreso", [["practica", "Práctica"], ["clases", "Clases particulares"], ["familia", "Familia"], ["reembolsos", "Me devolvieron plata"], ["otros", "Otros ingresos"]]],
 ];
 const PALETA = ["#E07B39", "#3D7FC1", "#2E9A68", "#8A63D2", "#D9548F", "#C9A227", "#1FA2A6", "#6B7B8C", "#A0522D", "#2F7A45", "#B03A2E", "#4F46E5"];
 function seedCats() {
@@ -131,6 +132,14 @@ function seedCats() {
   for (const [id, nombre, color, tipo, subs] of DEF_CATS) {
     save("cat", { id, nombre, color, tipo, orden: o++, presupuesto: null });
     subs.forEach(([sid, sn], i) => save("cat", { id: id + "." + sid, nombre: sn, padre: id, orden: i }));
+  }
+}
+// Agrega las categorías nuevas que vayan saliendo sin tocar las que ya editaste o archivaste
+function ensureCats() {
+  let o = Object.values(S.cat).filter((c) => !c.padre).length;
+  for (const [id, nombre, color, tipo, subs] of DEF_CATS) {
+    if (!S.cat[id]) save("cat", { id, nombre, color, tipo, orden: o++, presupuesto: null });
+    subs.forEach(([sid, sn], i) => { if (!S.cat[id + "." + sid]) save("cat", { id: id + "." + sid, nombre: sn, padre: id, orden: i }); });
   }
 }
 function seedCuentas() {
@@ -464,13 +473,18 @@ function viewGastos() {
 function viewBandeja() {
   const all = pendientes();
   if (!all.length) return `<section class="card" style="align-items:center;text-align:center;padding:30px 16px"><h2>Todo clasificado</h2><p class="muted small">Cuando importes una cartola o llegue una compra de Wallet, aparece aquí una por una.</p><button class="btn primary" data-act="sub" data-sub="importar">Importar cartola</button></section>`;
+  // Primero los comercios que más se repiten: con una regla se van varios de una
+  const freq = {}; all.forEach((x) => { const k = L.patronDe(x.glosa || ""); freq[k] = (freq[k] || 0) + 1; });
   let list = all.filter((m) => !S.skip.has(m.id)); if (!list.length) { S.skip.clear(); list = all; }
-  const m = list[0];
+  list.sort((a, b) => freq[L.patronDe(b.glosa || "")] - freq[L.patronDe(a.glosa || "")] || (a.fecha < b.fecha ? 1 : -1));
+  const m = list[0], iguales = freq[L.patronDe(m.glosa || "")] || 1;
+  const conSug = all.filter((x) => x.sug && S.cat[x.sug]);
   if (S.bq.id !== m.id) S.bq = { id: m.id, cat: null, padre: null, todas: false };
   const ingreso = m.monto > 0;
   const tipo = S.bq.todas ? null : ingreso ? "ingreso" : "gasto";
   const sug = m.sug && S.cat[m.sug] ? m.sug : null;
-  let h = `<div class="row between small muted"><span>${all.length} por clasificar</span>${all.length > 1 ? `<span>${all.indexOf(m) + 1} de ${all.length}</span>` : ""}</div>`;
+  let h = `<div class="row between small muted"><span>${all.length} por clasificar</span>${iguales > 1 ? `<span>${iguales} con esta glosa</span>` : ""}</div>`;
+  if (conSug.length >= 2) h += `<div class="banner acc"><div class="grow small">Reconocí el comercio en <b>${conSug.length}</b>. ¿Las acepto todas de una?</div><button class="btn sm primary" data-act="bqAceptarTodas">Aceptar</button></div>`;
   h += `<section class="card"><div class="eyebrow">${esc(cuentaLabel(m.cuenta_id))} · ${fechaCorta(m.fecha)} · ${m.origen === "wallet" ? "Wallet" : m.origen === "captura" ? "captura" : "cartola"}</div>
     <div class="inbox-amt ${ingreso ? "in" : ""}">${m.moneda === "USD" ? "US" : ""}${fmt(m.monto, true)}</div>
     <div class="glosa">${esc(m.glosa || "(sin glosa)")}</div>
@@ -857,7 +871,10 @@ function sheetImport() {
     ${I.estado ? `<div class="card" style="background:var(--sunk)"><h3>Estado de cuenta</h3><div class="small">Total ${I.estado.total != null ? fmt(I.estado.total) : "?"} · mínimo ${I.estado.minimo != null ? fmt(I.estado.minimo) : "?"} · vence ${I.estado.fecha_venc ? fechaCorta(I.estado.fecha_venc) : "?"}${I.estado.tasa ? " · tasa " + String(I.estado.tasa).replace(".", ",") + "%" : ""}</div><label class="row small"><input type="checkbox" id="impEstado" checked style="width:auto;min-height:0"> Guardarlo en la tarjeta</label></div>` : ""}
     <div class="row wrapr small"><span class="pill acc">${nNew} para importar</span>${nDup ? `<span class="pill">${nDup} ya estaban</span>` : ""}${nW ? `<span class="pill warn">${nW} calzan con Wallet</span>` : ""}</div>
     ${I.filas.some((f) => f.dudoso) ? `<p class="tiny muted">Leí los montos desde texto: revisa que los cargos y abonos estén bien. Toca el monto para cambiar el signo.</p>` : ""}
-    <table class="tbl">${I.filas.map((f, k) => `<tr class="${f.st === "dup" ? "dup" : ""}"><td><input type="checkbox" data-ch="impSel" data-k="${k}" ${f.sel ? "checked" : ""} style="width:auto;min-height:0"></td><td class="tiny muted" style="white-space:nowrap">${fechaCorta(f.fecha)}</td><td>${esc(f.glosa)}${f.cuotas ? ` <span class="pill">${f.cuotas.n}/${f.cuotas.de}</span>` : ""}${f.st === "dup" ? ` <span class="pill">ya estaba</span>` : f.st === "wallet" ? ` <span class="pill warn">Wallet</span>` : ""}</td><td class="r"><button class="btn ghost sm num ${f.monto > 0 ? "in" : ""}" style="min-height:0;padding:2px 0" data-act="impSigno" data-k="${k}">${f.moneda === "USD" ? "US" : ""}${fmt(f.monto, true)}</button></td></tr>`).join("")}</table>
+    ${I.errores && I.errores.length ? `<div class="banner"><div>No pude leer: ${I.errores.join("<br>")}</div></div>` : ""}
+    ${I.otros ? `<p class="tiny muted">${I.otros} ${I.otros === 1 ? "archivo es" : "archivos son"} de otra cuenta. Súbelos aparte.</p>` : ""}
+    ${I.filas.length > 60 ? `<table class="tbl">${Object.entries(I.filas.reduce((o, f) => { const k = ymOf(f.fecha); o[k] = o[k] || { n: 0, nuevo: 0 }; o[k].n++; if (f.sel) o[k].nuevo++; return o; }, {})).sort().map(([ym, x]) => `<tr><td>${mesLabel(ym)}</td><td class="r small muted">${x.nuevo} de ${x.n} para importar</td></tr>`).join("")}</table><p class="tiny muted">Abajo van los primeros 60 movimientos. Puedes desmarcar cualquiera.</p>` : ""}
+    <table class="tbl">${I.filas.slice(0, 60).map((f, k) => `<tr class="${f.st === "dup" ? "dup" : ""}"><td><input type="checkbox" data-ch="impSel" data-k="${k}" ${f.sel ? "checked" : ""} style="width:auto;min-height:0"></td><td class="tiny muted" style="white-space:nowrap">${fechaCorta(f.fecha)}</td><td>${esc(f.glosa)}${f.cuotas ? ` <span class="pill">${f.cuotas.n}/${f.cuotas.de}</span>` : ""}${f.st === "dup" ? ` <span class="pill">ya estaba</span>` : f.st === "wallet" ? ` <span class="pill warn">Wallet</span>` : ""}</td><td class="r"><button class="btn ghost sm num ${f.monto > 0 ? "in" : ""}" style="min-height:0;padding:2px 0" data-act="impSigno" data-k="${k}">${f.moneda === "USD" ? "US" : ""}${fmt(f.monto, true)}</button></td></tr>`).join("")}</table>
     ${I.filas.length ? "" : `<p class="empty">No encontré movimientos en este archivo. Mándamelo y armo el lector para ese formato.</p>`}
     <button class="btn primary" data-act="doImport" ${nNew ? "" : "disabled"}>Importar ${nNew}</button>`;
 }
@@ -992,6 +1009,10 @@ const ACT = {
   },
   bqInterno: () => { const m = S.mov[S.bq.id]; if (!m) return; m.estado = "interno"; delete m.sug; save("mov", m); S.bq = {}; toast("Marcado como movimiento entre tus cuentas"); render(); },
   bqIgnorar: () => { const m = S.mov[S.bq.id]; if (!m) return; m.estado = "ignorado"; save("mov", m); S.bq = {}; render(); },
+  bqAceptarTodas: () => {
+    let n = 0; for (const x of pendientes()) if (x.sug && S.cat[x.sug]) { x.cat = x.sug; x.estado = "ok"; x.auto = "sugerencia"; delete x.sug; save("mov", x); n++; }
+    S.bq = {}; toast(n + " clasificadas. Si alguna quedó mal, la cambias desde el movimiento."); render();
+  },
   bqSkip: () => { S.skip.add(S.bq.id); S.bq = {}; render(); },
   reglaSi: () => {
     const sh = S.sheet; const patron = ($("#rgPatron").value || "").trim(); if (!patron) return;
@@ -1123,10 +1144,18 @@ document.querySelectorAll(".tab").forEach((b) => (b.onclick = () => go(b.dataset
 /* ============ Importar ============ */
 $("#fileIn").addEventListener("change", async (e) => {
   const files = [...e.target.files]; if (!files.length) return;
+  if (files.length > 1) toast("Leyendo " + files.length + " archivos…");
+  const leidos = [], errores = [];
   for (const f of files) {
-    try { await leerArchivo(f); } catch (err) { S.sheet = { t: "msg", title: "No pude leer " + f.name, html: esc(err.message || String(err)) + "<br><br>Mándame ese archivo y armo el lector para ese formato." }; render(); }
-    if (S.sheet && S.sheet.t === "import") break;
+    try { const o = await leerArchivo(f); if (o) leidos.push(o); } catch (err) { errores.push(esc(f.name) + ": " + esc(err.message || String(err))); }
   }
+  if (!leidos.length) { if (errores.length) { S.sheet = { t: "msg", title: "No pude leer " + (files.length > 1 ? "los archivos" : files[0].name), html: errores.join("<br>") + "<br><br>Mándame ese archivo y armo el lector para ese formato." }; render(); } return; }
+  // Si son del mismo banco y tipo, se revisan juntos; si no, se abre el primero
+  const grupo = leidos.filter((o) => o.banco === leidos[0].banco && !!o.credito === !!leidos[0].credito);
+  const filas = []; grupo.forEach((o, src) => o.filas.forEach((f, i) => filas.push(Object.assign(f, { src, idx: src * 100000 + i }))));
+  const m = Object.assign({}, grupo[0], { filas, archivo: grupo.length > 1 ? grupo.length + " archivos" : grupo[0].archivo, errores, otros: leidos.length - grupo.length });
+  m.estado = (grupo.find((o) => o.estado) || {}).estado || null;
+  prepararImport(m);
 });
 function parseCSV(text) {
   const first = text.split(/\r?\n/).slice(0, 5).join("\n");
@@ -1158,9 +1187,9 @@ async function leerArchivo(f) {
     }
     if (!full.trim()) throw new Error("El PDF no tiene texto (parece escaneado). Prueba con el Excel o una captura.");
     const det = L.detectarBanco(full, name);
-    return prepararImport({ archivo: name, banco: det.banco, credito: det.credito, filas: L.leerLineas(lines, { credito: det.credito }), estado: det.credito ? L.leerEstadoTC(full) : null, origen: "cartola" });
+    return { archivo: name, banco: det.banco, credito: det.credito, filas: L.leerLineas(lines, { credito: det.credito }), estado: det.credito ? L.leerEstadoTC(full) : null, origen: "cartola", texto: full };
   }
-  if (ext === "txt") { const t = await f.text(); const det = L.detectarBanco(t, name); return prepararImport({ archivo: name, banco: det.banco, credito: det.credito, filas: L.leerCaptura(t), origen: "captura" }); }
+  if (ext === "txt") { const t = await f.text(); const det = L.detectarBanco(t, name); return { archivo: name, banco: det.banco, credito: det.credito, filas: L.leerCaptura(t), origen: "captura", texto: t }; }
   let rows;
   if (ext === "csv") { let t = await f.text(); if (/Ã|Â/.test(t)) { const b = await f.arrayBuffer(); t = new TextDecoder("windows-1252").decode(b); } rows = parseCSV(t); }
   else {
@@ -1168,13 +1197,13 @@ async function leerArchivo(f) {
     const wb = XLSX.read(await f.arrayBuffer(), { type: "array", cellDates: true });
     rows = []; wb.SheetNames.forEach((sn) => { rows = rows.concat(XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: "" })); });
   }
-  const text = rows.slice(0, 40).map((r) => r.join(" ")).join("\n");
+  const text = rows.map((r) => r.join(" ")).join("\n");
   const det = L.detectarBanco(text, name);
   const res = L.leerTabla(rows);
-  return prepararImport({ archivo: name, banco: det.banco, credito: det.credito, filas: res.filas, estado: det.credito ? L.leerEstadoTC(rows.map((r) => r.join(" ")).join("\n")) : null, origen: "cartola" });
+  return { archivo: name, banco: det.banco, credito: det.credito, filas: res.filas, estado: det.credito ? L.leerEstadoTC(text) : null, origen: "cartola" };
 }
 async function leerImagen(f) {
-  if (DEMO || !sb) { S.sheet = { t: "msg", title: "Lectura con Claude", html: "En el demo no se puede. Usa la opción de pegar texto." }; render(); return; }
+  if (DEMO || !sb) throw new Error("En el demo no se pueden leer imágenes. Usa la opción de pegar texto.");
   toast("Leyendo la captura con Claude…");
   const img = await createImageBitmap(f).catch(() => null);
   if (!img) throw new Error("No pude abrir la imagen. Si es HEIC, haz una captura normal (PNG).");
@@ -1191,7 +1220,7 @@ async function leerImagen(f) {
   }
   const filas = (data.movimientos || []).map((x) => ({ fecha: L.parseFecha(x.fecha) || today(), glosa: String(x.descripcion || "").trim(), monto: +x.monto, cuotas: L.cuotasDe(x.cuotas || "", x.descripcion || "") || undefined })).filter((x) => x.glosa && x.monto);
   const det = L.detectarBanco(data.banco || "", "");
-  prepararImport({ archivo: f.name || "Captura", banco: det.banco, credito: det.credito, filas, origen: "captura" });
+  return { archivo: f.name || "Captura", banco: det.banco, credito: det.credito, filas, origen: "captura" };
 }
 function adivinarCuenta(banco, credito) {
   const cs = Object.values(S.cuentas).filter((c) => !c.archivada);
@@ -1214,12 +1243,12 @@ function prepararImport(o) {
 function anotarFilas() {
   const I = S.imp, cta = I.cuenta, cnt = {};
   const huellas = new Set(movsList().map((m) => m.huella).filter(Boolean));
-  const usados = new Set();
+  const usados = new Set(), lote = new Set();
   for (const f of I.filas) {
-    const base = L.huella(cta, f.fecha, f.monto, f.glosa, 0); const k = cnt[base] = (cnt[base] || 0) + 1;
+    const base = L.huella(cta, f.fecha, f.monto, f.glosa, 0), ck = (f.src || 0) + "|" + base; const k = cnt[ck] = (cnt[ck] || 0) + 1;
     f.huella = L.huella(cta, f.fecha, f.monto, f.glosa, k - 1);
     f.st = "nuevo"; f.gemelo = null;
-    if (huellas.has(f.huella)) f.st = "dup";
+    if (huellas.has(f.huella) || lote.has(f.huella)) f.st = "dup";
     else {
       const g5 = L.norm(f.glosa).replace(/[^A-Z0-9]/g, "").slice(0, 5);
       const gem = movsList().find((m) => !usados.has(m.id) && (m.cuenta_id === cta || m.origen === "wallet") && Math.abs(dayDiff(m.fecha, f.fecha)) <= 3 &&
@@ -1229,6 +1258,7 @@ function anotarFilas() {
     }
     if (f.sel == null || f._stPrev !== f.st) f.sel = f.st !== "dup";
     f._stPrev = f.st;
+    if (f.st !== "dup") lote.add(f.huella);
   }
 }
 function doImport() {
@@ -1248,9 +1278,14 @@ function doImport() {
     save("mov", m); nuevos++;
   }
   // Saldo de la cuenta según la fila más reciente que lo traiga
-  const conSaldo = I.filas.filter((f) => f.saldo != null && !f.dudoso).sort((a, b) => (a.fecha < b.fecha ? 1 : -1))[0];
+  const conSaldo = I.filas.map((f, i) => Object.assign({ _o: f.idx ?? i }, f)).filter((f) => f.saldo != null && !f.dudoso).sort((a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : b._o - a._o));
   const c = S.cuentas[I.cuenta];
-  if (conSaldo && c && c.tipo !== "credito" && (!c.saldo_fecha || conSaldo.fecha >= c.saldo_fecha)) { setSaldo(c, conSaldo.saldo, conSaldo.fecha); save("cuentas", c); }
+  if (conSaldo.length && c && c.tipo !== "credito") {
+    const vistos = new Set();
+    for (const f of conSaldo) { const ym = ymOf(f.fecha); if (vistos.has(ym)) continue; vistos.add(ym); const h = (c.hist || []).filter((x) => ymOf(x.f) !== ym || x.f > f.fecha); if (!h.some((x) => ymOf(x.f) === ym)) h.push({ f: f.fecha, s: f.saldo }); c.hist = h.sort((a, b) => (a.f < b.f ? -1 : 1)).slice(-400); }
+    if (!c.saldo_fecha || conSaldo[0].fecha >= c.saldo_fecha) { c.saldo = conSaldo[0].saldo; c.saldo_fecha = conSaldo[0].fecha; }
+    save("cuentas", c);
+  }
   // Estado de cuenta de la tarjeta
   const chk = $("#impEstado");
   if (I.estado && (!chk || chk.checked) && c) {
@@ -1351,7 +1386,7 @@ async function loadAll() {
     S.mov = map("mov", mov); S.cat = map("cat", cat); S.reglas = map("reglas", reg); S.cuentas = map("cuentas", cue); S.metas = map("metas", met); S.estados = map("estados", est);
     if (aj.data && aj.data.data && !outbox.aj) S.aj = aj.data.data;
     for (const k in outbox) { const o = outbox[k]; if (o.del) { delete S[KIND[o.table]][o.del]; continue; } const kind = KIND[o.table]; if (kind === "aj") S.aj = o.row.data; else S[kind][o.row.id] = fromRow(kind, o.row); }
-    if (!cat.length && !Object.keys(S.cat).length) seedCats();
+    if (!cat.length && !Object.keys(S.cat).length) seedCats(); else ensureCats();
     if (!cue.length && !Object.keys(S.cuentas).length) seedCuentas();
     if (!met.length && !Object.keys(S.metas).length) seedMeta();
     if (!aj.data && !outbox.aj) save("aj", Object.assign({ aviso1: 80, aviso2: 100, usd: 950 }, S.aj));
