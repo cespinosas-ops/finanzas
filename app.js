@@ -123,8 +123,9 @@ const DEF_CATS = [
   ["viajes", "Viajes", "#1FA2A6", "gasto", [["vuelos", "Vuelos"], ["aloja", "Alojamiento"], ["otros", "Gastos de viaje"]]],
   ["u", "Universidad", "#6B7B8C", "gasto", [["material", "Materiales"], ["otros", "Otros de la U"]]],
   ["mascotas", "Mascotas", "#4F46E5", "gasto", [["general", "Comida y veterinaria"]]],
-  ["regalos", "Regalos y otros", "#A0522D", "gasto", [["regalos", "Regalos"], ["otros", "Otros gastos"]]],
-  ["ingresos", "Ingresos", "#2F7A45", "ingreso", [["practica", "Práctica"], ["clases", "Clases particulares"], ["familia", "Familia"], ["reembolsos", "Me devolvieron plata"], ["otros", "Otros ingresos"]]],
+  ["transf", "Transferencias", "#B03A2E", "gasto", [["amigos", "A amigos"], ["familia", "A familia"], ["prestamos", "Préstamos"], ["sinid", "Sin identificar"]]],
+  ["regalos", "Regalos y otros", "#A0522D", "gasto", [["regalos", "Regalos"], ["otros", "Otros gastos"], ["sinid", "Gastos sin identificar"]]],
+  ["ingresos", "Ingresos", "#2F7A45", "ingreso", [["practica", "Práctica"], ["clases", "Clases particulares"], ["familia", "Familia"], ["reembolsos", "Me devolvieron plata"], ["otros", "Otros ingresos"], ["sinid", "Sin identificar"]]],
 ];
 const PALETA = ["#E07B39", "#3D7FC1", "#2E9A68", "#8A63D2", "#D9548F", "#C9A227", "#1FA2A6", "#6B7B8C", "#A0522D", "#2F7A45", "#B03A2E", "#4F46E5"];
 function seedCats() {
@@ -191,6 +192,9 @@ function partes(m) {
 function tipoParte(p, m) { if (p.cat) return catTipo(p.cat) || (p.monto < 0 ? "gasto" : "ingreso"); return p.monto < 0 ? "gasto" : "ingreso"; }
 const movsList = () => Object.values(S.mov);
 const movsMes = (ym) => movsList().filter((m) => m.fecha && m.fecha.startsWith(ym));
+const esTransf = (m) => /^TRASPASO (A|DE)\s*:|TRANSFERENCIA|TRANSF\.? (A|DE)\b|^TEF\b/.test(L.norm(m.glosa || ""));
+const catNoSe = (m) => (m.monto > 0 ? "ingresos.sinid" : esTransf(m) ? "transf.sinid" : "regalos.sinid");
+const ignorados = () => movsList().filter((m) => m.estado === "ignorado").sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
 const pendientes = () => movsList().filter((m) => m.estado === "pendiente").sort((a, b) => (a.fecha < b.fecha ? -1 : 1));
 
 function totales(ym) {
@@ -472,7 +476,9 @@ function viewGastos() {
 /* Bandeja por clasificar */
 function viewBandeja() {
   const all = pendientes();
-  if (!all.length) return `<section class="card" style="align-items:center;text-align:center;padding:30px 16px"><h2>Todo clasificado</h2><p class="muted small">Cuando importes una cartola o llegue una compra de Wallet, aparece aquí una por una.</p><button class="btn primary" data-act="sub" data-sub="importar">Importar cartola</button></section>`;
+  const nIgn = ignorados().length;
+  const avisoIgn = nIgn ? `<button class="banner" style="border:0;text-align:left" data-act="sub" data-sub="revisar"><div class="grow small">Tienes <b>${nIgn}</b> ${nIgn === 1 ? "movimiento ignorado que no cuenta" : "movimientos ignorados que no cuentan"} como gasto. Revisar</div>${chev}</button>` : "";
+  if (!all.length) return `<section class="card" style="align-items:center;text-align:center;padding:30px 16px"><h2>Todo clasificado</h2><p class="muted small">Cuando importes una cartola o llegue una compra de Wallet, aparece aquí una por una.</p><button class="btn primary" data-act="sub" data-sub="importar">Importar cartola</button></section>` + avisoIgn;
   // Primero los comercios que más se repiten: con una regla se van varios de una
   const freq = {}; all.forEach((x) => { const k = L.patronDe(x.glosa || ""); freq[k] = (freq[k] || 0) + 1; });
   let list = all.filter((m) => !S.skip.has(m.id)); if (!list.length) { S.skip.clear(); list = all; }
@@ -485,19 +491,22 @@ function viewBandeja() {
   const sug = m.sug && S.cat[m.sug] ? m.sug : null;
   let h = `<div class="row between small muted"><span>${all.length} por clasificar</span>${iguales > 1 ? `<span>${iguales} con esta glosa</span>` : ""}</div>`;
   if (conSug.length >= 2) h += `<div class="banner acc"><div class="grow small">Reconocí el comercio en <b>${conSug.length}</b>. ¿Las acepto todas de una?</div><button class="btn sm primary" data-act="bqAceptarTodas">Aceptar</button></div>`;
+  const viejas = all.filter((x) => x.fecha < addD(today(), -45));
+  if (viejas.length >= 3) h += `<div class="banner"><div class="grow small">Tienes <b>${viejas.length}</b> de hace más de mes y medio. Si no te acuerdas, las mando todas a <b>Sin identificar</b> (igual cuentan como gasto).</div><button class="btn sm" data-act="bqNoSeViejas">Mandar</button></div>`;
   h += `<section class="card"><div class="eyebrow">${esc(cuentaLabel(m.cuenta_id))} · ${fechaCorta(m.fecha)} · ${m.origen === "wallet" ? "Wallet" : m.origen === "captura" ? "captura" : "cartola"}</div>
     <div class="inbox-amt ${ingreso ? "in" : ""}">${m.moneda === "USD" ? "US" : ""}${fmt(m.monto, true)}</div>
     <div class="glosa">${esc(m.glosa || "(sin glosa)")}</div>
     ${m.cuotas ? `<span class="pill">cuota ${m.cuotas.n} de ${m.cuotas.de}</span>` : ""}
     ${sug && !S.bq.cat ? `<div class="banner acc"><div class="grow">Parece <b>${esc(catName(sug, true))}</b></div><button class="btn sm primary" data-act="bqPick" data-cat="${sug}">Sí</button></div>` : ""}
     <label class="f">Nombre<input id="bqNombre" value="${esc(S.bq.nombre != null ? S.bq.nombre : nombreMov(m))}" autocomplete="off"></label>
-    <div class="f small muted">Categoría</div>
+    ${esTransf(m) ? `<div class="f small muted">Transferencia, rápido</div><div class="chips">${(ingreso ? [["ingresos.familia", "De familia"], ["ingresos.reembolsos", "Me devolvieron"], ["ingresos.clases", "Clases"], ["ingresos.otros", "Otro ingreso"]] : [["transf.amigos", "A un amigo"], ["transf.familia", "A familia"], ["transf.prestamos", "Préstamo"]]).filter(([c]) => S.cat[c]).map(([c, l]) => `<button class="chip" data-act="bqPick" data-cat="${c}" aria-pressed="${S.bq.cat === c}">${l}</button>`).join("")}</div><div class="f small muted">O una categoría, si fue para pagar algo</div>` : `<div class="f small muted">Categoría</div>`}
     <div class="chips">${roots(tipo).map((r) => `<button class="chip" data-act="bqRoot" data-id="${r.id}" aria-pressed="${S.bq.padre === r.id}"><span class="dot" style="background:${r.color}"></span>${esc(r.nombre)}</button>`).join("")}${!S.bq.todas ? `<button class="chip" data-act="bqTodas">Ver todas</button>` : ""}</div>
     ${S.bq.padre ? `<div class="chips">${subsOf(S.bq.padre).map((s) => `<button class="chip" data-act="bqPick" data-cat="${s.id}" aria-pressed="${S.bq.cat === s.id}">${esc(s.nombre)}</button>`).join("")}<button class="chip" data-act="bqPick" data-cat="${S.bq.padre}" aria-pressed="${S.bq.cat === S.bq.padre}">General</button></div>` : ""}
     <button class="btn primary" data-act="bqSave" ${S.bq.cat ? "" : "disabled"}>${S.bq.cat ? "Guardar en " + esc(catName(S.bq.cat, true)) : "Elige una categoría"}</button>
-    <div class="grid2"><button class="btn sm" data-act="dividir" data-id="${m.id}">Dividir</button><button class="btn sm" data-act="bqInterno">Entre mis cuentas</button><button class="btn sm" data-act="bqIgnorar">Ignorar</button><button class="btn sm ghost" data-act="bqSkip">Saltar</button></div>
+    <button class="btn" data-act="bqNoSe">No me acuerdo</button>
+    <div class="grid2"><button class="btn sm" data-act="dividir" data-id="${m.id}">Dividir</button><button class="btn sm" data-act="bqInterno">Entre mis cuentas</button><button class="btn sm" data-act="bqIgnorar">Ignorar (no cuenta)</button><button class="btn sm ghost" data-act="bqSkip">Saltar</button></div>
   </section>`;
-  return h;
+  return h + avisoIgn;
 }
 
 /* Tarjeta */
@@ -541,10 +550,12 @@ function viewMas() {
   if (S.sub === "cuentas") return viewCuentas();
   if (S.sub === "atajos") return viewAtajos();
   if (S.sub === "movs") return viewMovs();
+  if (S.sub === "revisar") return viewRevisar();
   const it = (sub, t, d) => `<button class="li" data-act="sub" data-sub="${sub}"><span class="t"><div>${t}</div><div class="tiny muted">${d}</div></span>${chev}</button>`;
   return `<section class="card"><div class="list">
     ${it("importar", "Importar cartola o captura", "Excel, CSV, PDF o fotos de la app del banco")}
     ${it("movs", "Todos los movimientos", "Buscar y editar")}
+    ${it("revisar", "Ignorados y sin identificar", ignorados().length + " ignorados")}
     ${it("meta", "Meta de ahorro", (metaActiva() || {}).nombre || "Sin meta")}
     ${it("presupuesto", "Presupuesto", presTotal() ? fmt(presTotal()) + " al mes" : "Sin fijar")}
     ${it("categorias", "Categorías", "Nombres, colores y subcategorías")}
@@ -566,6 +577,14 @@ function viewImportar() {
     <p class="small muted">Opción con Claude: sube la imagen y la API la lee entera (necesita la clave de Anthropic en Supabase).</p>
     <button class="btn" data-act="pickFile" data-accept="image/*">Leer imagen con Claude</button></section>
   ${S.capturas.length ? `<section class="card"><h2>Llegaron del Atajo</h2><div class="list">${S.capturas.map((c, k) => `<button class="li" data-act="abrirCaptura" data-k="${k}"><span class="t"><div>Captura del ${fechaCorta(String(c.created_at).slice(0, 10))}</div><div class="tiny muted">${esc(String(c.data.texto || "").slice(0, 60))}</div></span>${chev}</button>`).join("")}</div></section>` : ""}`;
+}
+function viewRevisar() {
+  const ign = ignorados();
+  const sinid = movsList().filter((m) => activo(m) && /\.sinid$/.test(m.cat || "")).sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+  return back() + `<section class="card"><h2>Ignorados</h2><p class="small muted">No cuentan en tus gastos ni en Análisis. Úsalo solo para cosas que de verdad no son gasto, como un cobro que te devolvieron completo.</p>
+    ${ign.length ? `<button class="btn" data-act="ignASinId">Pasar los ${ign.length} a Sin identificar</button><div class="list">${ign.map((m) => movLi(m)).join("")}</div>` : `<p class="empty">No tienes ignorados.</p>`}</section>
+  <section class="card"><h2>Sin identificar</h2><p class="small muted">Sí cuentan como gasto. Si después te acuerdas de alguno, tócalo y cámbiale la categoría.</p>
+    ${sinid.length ? `<div class="list">${sinid.map((m) => movLi(m)).join("")}</div>` : `<p class="empty">Nada por aquí.</p>`}</section>`;
 }
 function viewMovs() {
   const q = L.norm(S.q || "");
@@ -957,7 +976,7 @@ function sheetEditEstado() {
 
 /* ============ Render ============ */
 const TITLES = { mes: "Mi mes", gastos: "Gastos", bandeja: "Por clasificar", tarjeta: "Tarjeta", analisis: "Análisis", mas: "Más" };
-const SUBT = { importar: "Importar", meta: "Meta de ahorro", presupuesto: "Presupuesto", categorias: "Categorías", reglas: "Reglas", cuentas: "Cuentas", atajos: "Atajos", movs: "Movimientos" };
+const SUBT = { importar: "Importar", meta: "Meta de ahorro", presupuesto: "Presupuesto", categorias: "Categorías", reglas: "Reglas", cuentas: "Cuentas", atajos: "Atajos", movs: "Movimientos", revisar: "Por revisar" };
 function render() {
   const main = $("#main");
   $("header.top").hidden = !!S.needLogin;
@@ -1013,6 +1032,20 @@ const ACT = {
   bqAceptarTodas: () => {
     let n = 0; for (const x of pendientes()) if (x.sug && S.cat[x.sug]) { x.cat = x.sug; x.estado = "ok"; x.auto = "sugerencia"; delete x.sug; save("mov", x); n++; }
     S.bq = {}; toast(n + " clasificadas. Si alguna quedó mal, la cambias desde el movimiento."); render();
+  },
+  bqNoSe: () => {
+    const m = S.mov[S.bq.id]; if (!m) return;
+    Object.assign(m, { cat: catNoSe(m), estado: "ok", nombre: ($("#bqNombre").value || "").trim() || nombreMov(m) }); delete m.sug; save("mov", m);
+    S.bq = {}; toast("Quedó en Sin identificar"); render();
+  },
+  bqNoSeViejas: () => {
+    const lim = addD(today(), -45); let n = 0;
+    for (const x of pendientes()) if (x.fecha < lim) { x.cat = catNoSe(x); x.estado = "ok"; delete x.sug; save("mov", x); n++; }
+    S.bq = {}; toast(n === 1 ? "1 pasó a Sin identificar" : n + " pasaron a Sin identificar"); render();
+  },
+  ignASinId: () => {
+    let n = 0; for (const x of ignorados()) { x.cat = catNoSe(x); x.estado = "ok"; x.antes = "ignorado"; save("mov", x); n++; }
+    toast(n === 1 ? "1 pasó a Sin identificar y ahora cuenta" : n + " pasaron a Sin identificar y ahora cuentan"); render();
   },
   bqSkip: () => { S.skip.add(S.bq.id); S.bq = {}; render(); },
   reglaSi: () => {
@@ -1391,6 +1424,8 @@ async function loadAll() {
     if (!cue.length && !Object.keys(S.cuentas).length) seedCuentas();
     if (!met.length && !Object.keys(S.metas).length) seedMeta();
     if (!aj.data && !outbox.aj) save("aj", Object.assign({ aviso1: 80, aviso2: 100, usd: 950 }, S.aj));
+    // Sugerencias nuevas para lo que sigue pendiente (solo en pantalla, no se guarda hasta que lo aceptes)
+    for (const m of pendientes()) if (!m.sug) { const sg = L.sugerir(m.glosa || "", m.monto); if (sg && sg.tipo === "cat" && S.cat[sg.cat]) m.sug = sg.cat; }
     S.ready = true; cacheLocal();
   } catch (e) { S.ready = true; showBanner("No pude leer tus datos (" + (e.message || e) + "). Muestro lo último guardado en el teléfono."); }
   if (!isTyping() && !S.sheet) render();
@@ -1468,7 +1503,7 @@ if ("serviceWorker" in navigator && !DEMO) window.addEventListener("load", () =>
 
 /* ============ Aviso de versión nueva ============ */
 // version.json cambia con cada actualización; si no calza con la que está abierta, ofrece recargar
-const VERSION = "2026-11-04.3";
+const VERSION = "2026-11-04.4";
 async function revisarVersion() {
   if (DEMO || !navigator.onLine) return;
   try {
