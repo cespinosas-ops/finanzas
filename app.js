@@ -589,7 +589,7 @@ function viewRevisar() {
 function viewMovs() {
   const q = L.norm(S.q || "");
   const list = movsList().filter((m) => !q || L.norm(nombreMov(m) + " " + m.glosa + " " + catName(m.cat)).includes(q)).sort((a, b) => (a.fecha < b.fecha ? 1 : -1)).slice(0, 200);
-  return back() + `<input type="search" id="movQ" placeholder="Buscar por nombre, glosa o categoría" value="${esc(S.q || "")}"><section class="card"><div class="list">${list.map((m) => movLi(m, { sub: [fechaCorta(m.fecha), cuentaLabel(m.cuenta_id), m.estado === "pendiente" ? "por clasificar" : m.estado === "interno" ? "entre mis cuentas" : m.estado === "ignorado" ? "ignorado" : catName(m.cat)].join(" · ") })).join("") || `<p class="empty">Nada por aquí.</p>`}</div></section><button class="btn" data-act="nuevoMov">Agregar movimiento a mano</button>`;
+  return back() + `<p class="small muted">Toca cualquier movimiento para cambiarle la categoría, el nombre o dividirlo.</p><input type="search" id="movQ" placeholder="Buscar por nombre, glosa o categoría" value="${esc(S.q || "")}"><section class="card"><div class="list">${list.map((m) => movLi(m, { sub: [fechaCorta(m.fecha), cuentaLabel(m.cuenta_id), m.estado === "pendiente" ? "por clasificar" : m.estado === "interno" ? "entre mis cuentas" : m.estado === "ignorado" ? "ignorado" : catName(m.cat)].join(" · ") })).join("") || `<p class="empty">Nada por aquí.</p>`}</div></section><button class="btn" data-act="nuevoMov">Agregar movimiento a mano</button>`;
 }
 function metaActiva() { return Object.values(S.metas).find((m) => m.activa) || Object.values(S.metas)[0] || null; }
 function metaCalc(m) {
@@ -877,6 +877,7 @@ function sheetHtml() {
   else if (sh.t === "editRegla") body = sheetEditRegla();
   else if (sh.t === "editCuenta") body = sheetEditCuenta();
   else if (sh.t === "editEstado") body = sheetEditEstado();
+  else if (sh.t === "iguales") body = `<h2>¿Cambio los otros también?</h2><p class="small">Hay <b>${sh.ids.length}</b> ${sh.ids.length === 1 ? "movimiento más" : "movimientos más"} de <b>${esc(sh.nombre)}</b> en ${esc(catName(sh.de, true))}. ¿Los paso todos a <b>${esc(catName(sh.cat, true))}</b>?</p><p class="tiny muted">Y la regla queda apuntando a la categoría nueva, para las próximas cartolas.</p><div class="btns"><button class="btn primary" data-act="igualesSi">Sí, cambiar ${sh.ids.length + 1}</button><button class="btn" data-act="igualesNo">Solo este</button></div>`;
   else if (sh.t === "msg") body = `<h2>${esc(sh.title)}</h2><p>${sh.html}</p><button class="btn primary" data-act="close">Listo</button>`;
   return `<div class="lb" data-act="lbClose"><div class="sheet" role="dialog" aria-modal="true">${body}</div></div>`;
 }
@@ -1075,11 +1076,27 @@ const ACT = {
     if (S.sheet.nuevo) m.glosa = nombre;
     m.nombre = nombre || m.nombre; m.fecha = $("#emFecha").value || m.fecha; m.monto = monto; m.cuenta_id = $("#emCuenta").value;
     const cat = $("#emCat").value, est = $("#emEstado").value, fj = $("#emFijo").value;
+    const antes = { cat: m.cat, estado: m.estado };
     if (cat) m.cat = cat;
     m.estado = est === "ok" ? (cat || m.partes ? "ok" : "pendiente") : est;
     if (fj === "") delete m.fijo; else m.fijo = fj === "1";
-    delete m.sug; save("mov", m); S.sheet = null; toast("Guardado"); render();
+    delete m.sug; save("mov", m); S.sheet = null;
+    // Si le cambiaste la categoría, ofrece cambiar también los otros iguales
+    if (!S.sheet && antes.cat !== m.cat && m.estado === "ok" && m.glosa) {
+      const pat = L.patronDe(m.glosa);
+      const otros = movsList().filter((x) => x.id !== m.id && x.glosa && L.patronDe(x.glosa) === pat && x.cat === antes.cat && x.estado === antes.estado && !x.partes);
+      if (otros.length) { S.sheet = { t: "iguales", id: m.id, ids: otros.map((x) => x.id), cat: m.cat, nombre: nombreMov(m), de: antes.cat }; render(); return; }
+    }
+    toast("Guardado"); render();
   },
+  igualesSi: () => {
+    const sh = S.sheet; const m = S.mov[sh.id];
+    sh.ids.forEach((id) => { const x = S.mov[id]; if (x) { x.cat = sh.cat; x.estado = "ok"; save("mov", x); } });
+    const pat = L.norm(L.patronDe(m.glosa)); const r = Object.values(S.reglas).find((r) => L.norm(r.patron) === pat || reglaPara(m.glosa) === r);
+    if (r) { r.cat = sh.cat; save("reglas", r); } else save("reglas", { id: uid(), patron: pat, nombre: nombreMov(m), cat: sh.cat });
+    S.sheet = null; toast((sh.ids.length + 1) + " movimientos cambiados"); render();
+  },
+  igualesNo: () => { S.sheet = null; toast("Guardado"); render(); },
   delMov: () => { if (!confirm("¿Borrar este movimiento?")) return; remove("mov", S.sheet.id); S.sheet = null; render(); },
 
   /* Importar */
@@ -1503,7 +1520,7 @@ if ("serviceWorker" in navigator && !DEMO) window.addEventListener("load", () =>
 
 /* ============ Aviso de versión nueva ============ */
 // version.json cambia con cada actualización; si no calza con la que está abierta, ofrece recargar
-const VERSION = "2026-11-04.4";
+const VERSION = "2026-11-04.5";
 async function revisarVersion() {
   if (DEMO || !navigator.onLine) return;
   try {
