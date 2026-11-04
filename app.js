@@ -1520,19 +1520,29 @@ if ("serviceWorker" in navigator && !DEMO) window.addEventListener("load", () =>
 
 /* ============ Aviso de versión nueva ============ */
 // version.json cambia con cada actualización; si no calza con la que está abierta, ofrece recargar
-const VERSION = "2026-11-04.5";
+const VERSION = "2026-11-04.6";
+const ssGet = (k) => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
+const ssSet = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} };
+let ultimaRevision = 0;
 async function revisarVersion() {
-  if (DEMO || !navigator.onLine) return;
+  if (DEMO || !navigator.onLine || Date.now() - ultimaRevision < 60000) return;
+  ultimaRevision = Date.now();
   try {
     const r = await fetch("version.json?t=" + Date.now(), { cache: "no-store" }); if (!r.ok) return;
     const v = (await r.json()).v;
-    if (v && v !== VERSION && !$("#updBanner")) {
-      const b = document.createElement("div"); b.id = "updBanner"; b.className = "banner acc";
-      b.style.cssText = "position:fixed;left:16px;right:16px;bottom:calc(86px + env(safe-area-inset-bottom,0px));z-index:30;max-width:528px;margin:0 auto;box-shadow:0 4px 16px rgba(0,0,0,.15)";
-      b.innerHTML = '<div class="grow small"><b>Hay una versión nueva de la app.</b></div><button class="btn sm primary" id="updBtn">Actualizar</button>';
-      document.body.appendChild(b);
-      $("#updBtn").onclick = async () => { await flush(); try { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); } catch (e) {} location.reload(); };
-    }
+    // Solo avisa una vez por versión: si ya actualizaste y el navegador aún no la tiene, no insiste
+    if (!v || v === VERSION || $("#updBanner") || ssGet("upd:" + v)) return;
+    const b = document.createElement("div"); b.id = "updBanner"; b.className = "banner acc";
+    b.style.cssText = "position:fixed;left:16px;right:16px;bottom:calc(86px + env(safe-area-inset-bottom,0px));z-index:30;max-width:528px;margin:0 auto;box-shadow:0 4px 16px rgba(0,0,0,.15);align-items:center";
+    b.innerHTML = '<div class="grow small"><b>Hay una versión nueva de la app.</b></div><button class="btn sm ghost" id="updLuego">Después</button><button class="btn sm primary" id="updBtn">Actualizar</button>';
+    document.body.appendChild(b);
+    $("#updLuego").onclick = () => { ssSet("upd:" + v, "1"); b.remove(); };
+    $("#updBtn").onclick = async () => {
+      ssSet("upd:" + v, "1"); b.remove(); await flush();
+      try { const reg = await navigator.serviceWorker.getRegistration(); if (reg) await reg.update(); } catch (e) {}
+      try { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); } catch (e) {}
+      location.reload();
+    };
   } catch (e) {}
 }
 setTimeout(revisarVersion, 3000);
