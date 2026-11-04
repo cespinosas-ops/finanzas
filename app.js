@@ -386,6 +386,9 @@ function viewMes() {
   h += `</div></section>`;
   // Lo que viene
   h += `<section class="card"><h2>Lo que viene</h2>${viewLoQueViene()}</section>`;
+  const it = internosEn(ym + "-01", finMes(ym));
+  if (it.length) { const sale = it.reduce((a, x) => a + x.sale, 0), entra = it.reduce((a, x) => a + x.entra, 0);
+    h += `<button class="card" style="text-align:left;flex-direction:row;align-items:center" data-act="verInternos"><div class="grow"><div class="eyebrow">Entre tus cuentas</div><div class="small">${it.slice(0, 3).map((x) => esc(x.k)).join(", ")}${it.length > 3 ? " y " + (it.length - 3) + " más" : ""}</div><div class="tiny muted">Movido: salió ${fmtK(sale)}${entra ? ", entró " + fmtK(entra) : ""}. No cuenta como gasto.</div></div>${chev}</button>`; }
   const hm = hormigasEn(ym + "-01", finMes(ym));
   if (hm.length) h += `<button class="card" style="text-align:left;flex-direction:row;align-items:center" data-act="an" data-k="hormiga"><div class="grow"><div class="eyebrow">Gasto hormiga</div><div class="row between"><h2>${fmt(sum(hm))}</h2><span class="small muted">${hm.length} compras hasta ${fmtK(umbralH())}</span></div></div>${chev}</button>`;
   const rr = raros(ym);
@@ -633,6 +636,21 @@ function viewRevisar() {
   <section class="card"><h2>Sin identificar</h2><p class="small muted">Sí cuentan como gasto. Si después te acuerdas de alguno, tócalo y cámbiale la categoría.</p>
     ${sinid.length ? `<div class="list">${sinid.map((m) => movLi(m)).join("")}</div>` : `<p class="empty">Nada por aquí.</p>`}</section>`;
 }
+/* Movimientos entre tus cuentas e inversiones: no cuentan como gasto ni ingreso */
+function internosEn(desde, hasta) {
+  const g = {};
+  for (const m of movsEn(desde, hasta)) {
+    if (m.estado !== "interno") continue;
+    const k = nombreMov(m).replace(/^Transferencia (a|de) /, "") || "Otro";
+    const o = (g[k] = g[k] || { sale: 0, entra: 0, n: 0 }); o.n++; if (m.monto < 0) o.sale += -clp(m); else o.entra += clp(m);
+  }
+  return Object.entries(g).map(([k, o]) => Object.assign({ k }, o)).sort((a, b) => b.sale + b.entra - (a.sale + a.entra));
+}
+function internosResumen() {
+  const ym = S.mes, xs = internosEn(ym + "-01", finMes(ym));
+  if (!xs.length) return `<section class="card"><p class="small muted">No hay movimientos entre tus cuentas en ${mesLabel(ym)}.</p></section>`;
+  return `<section class="card"><h2>Entre tus cuentas en ${MES[+ym.slice(5) - 1]}</h2><p class="tiny muted">Traspasos a tus otras cuentas e inversiones. No cuentan como gasto ni como ingreso.</p><table class="tbl"><tr class="tiny muted"><td>Con</td><td class="r">Salió</td><td class="r">Entró</td></tr>${xs.map((x) => `<tr><td>${esc(x.k)} <span class="tiny muted">${x.n}×</span></td><td class="r num">${x.sale ? fmtK(x.sale) : ""}</td><td class="r num in">${x.entra ? fmtK(x.entra) : ""}</td></tr>`).join("")}</table></section>`;
+}
 function diaLabel(f) {
   const d = dayDiff(f, today());
   if (d === 0) return "Hoy"; if (d === 1) return "Ayer";
@@ -643,7 +661,7 @@ function viewMovs() {
   const q = L.norm(S.q || ""), fc = S.movCta || "", ft = S.movTipo || "";
   let list = movsList().filter((m) => m.fecha &&
     (!fc || m.cuenta_id === fc) &&
-    (!ft || (ft === "gastos" ? m.monto < 0 && activo(m) : ft === "ingresos" ? m.monto > 0 && activo(m) : ft === "pend" ? m.estado === "pendiente" : true)) &&
+    (!ft || (ft === "gastos" ? m.monto < 0 && activo(m) : ft === "ingresos" ? m.monto > 0 && activo(m) : ft === "pend" ? m.estado === "pendiente" : ft === "interno" ? m.estado === "interno" : ft === "ignorado" ? m.estado === "ignorado" : true)) &&
     (!q || L.norm(nombreMov(m) + " " + m.glosa + " " + catName(m.cat) + " " + cuentaLabel(m.cuenta_id)).includes(q)));
   list.sort((a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : (b.importado || "") < (a.importado || "") ? -1 : 1));
   const total = list.length; list = list.slice(0, S.movN || 150);
@@ -651,7 +669,8 @@ function viewMovs() {
   const chip = (act, val, cur, label) => `<button class="chip" data-act="${act}" data-v="${val}" aria-pressed="${cur === val}">${label}</button>`;
   let h = back() + `<input type="search" id="movQ" placeholder="Buscar por nombre, glosa, categoría o cuenta" value="${esc(S.q || "")}">
     <div class="chips">${chip("movCta", "", fc, "Todas")}${cs.map((c) => chip("movCta", c.id, fc, esc(cuentaLabel(c.id)))).join("")}</div>
-    <div class="chips">${chip("movTipo", "", ft, "Todo")}${chip("movTipo", "gastos", ft, "Gastos")}${chip("movTipo", "ingresos", ft, "Ingresos")}${chip("movTipo", "pend", ft, "Por clasificar")}</div>`;
+    <div class="chips">${chip("movTipo", "", ft, "Todo")}${chip("movTipo", "gastos", ft, "Gastos")}${chip("movTipo", "ingresos", ft, "Ingresos")}${chip("movTipo", "pend", ft, "Por clasificar")}${chip("movTipo", "interno", ft, "Entre mis cuentas")}${chip("movTipo", "ignorado", ft, "Ignorados")}</div>`;
+  if (ft === "interno") h += internosResumen();
   if (!list.length) return h + `<section class="card"><p class="empty">Nada por aquí.</p></section><button class="btn" data-act="nuevoMov">Agregar movimiento a mano</button>`;
   const dias = []; list.forEach((m) => { const d = dias[dias.length - 1]; if (d && d.f === m.fecha) d.ms.push(m); else dias.push({ f: m.fecha, ms: [m] }); });
   h += dias.map((d) => { const neto = d.ms.filter(activo).reduce((s, m) => s + clp(m), 0);
@@ -1219,6 +1238,7 @@ const ACT = {
   },
   movCta: (el) => { S.movCta = el.dataset.v; S.movN = 150; render(); },
   movTipo: (el) => { S.movTipo = el.dataset.v; S.movN = 150; render(); },
+  verInternos: () => { S.movTipo = "interno"; S.movCta = ""; S.q = ""; S.movN = 150; S.tab = "mas"; S.sub = "movs"; render(); window.scrollTo(0, 0); },
   movMas: () => { S.movN = (S.movN || 150) + 150; render(); },
   igualesNo: () => { S.sheet = null; toast("Guardado"); render(); },
   delMov: () => { if (!confirm("¿Borrar este movimiento?")) return; remove("mov", S.sheet.id); S.sheet = null; render(); },
@@ -1644,7 +1664,7 @@ if ("serviceWorker" in navigator && !DEMO) window.addEventListener("load", () =>
 
 /* ============ Aviso de versión nueva ============ */
 // version.json cambia con cada actualización; si no calza con la que está abierta, ofrece recargar
-const VERSION = "2026-11-04.10";
+const VERSION = "2026-11-04.11";
 const ssGet = (k) => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
 const ssSet = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} };
 let ultimaRevision = 0;
