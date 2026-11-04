@@ -384,6 +384,9 @@ function viewMes() {
   if (pend.length) h += `<button class="banner acc" style="border:0;text-align:left" data-act="tab" data-tab="bandeja"><div class="grow"><b>${pend.length} ${pend.length === 1 ? "movimiento" : "movimientos"} por clasificar.</b> <span class="small">Mientras, cuentan como "Por clasificar".</span></div>${chev}</button>`;
   for (const r of alerts) { const v = t.porRoot[r.id] || 0; const over = v >= r.presupuesto; h += `<div class="banner" style="${over ? "background:var(--bad-soft)" : ""}"><div class="grow">${over ? "Te pasaste" : "Vas en el " + pct(v, r.presupuesto) + "%"} del presupuesto de <b>${esc(r.nombre)}</b>: ${fmt(v)} de ${fmt(r.presupuesto)}.</div></div>`; }
   h += `<section class="card"><div class="cardhead"><h2>Entra versus sale</h2><span class="tiny muted"><span style="color:var(--accent)">■</span> entró <span style="color:var(--bad)">■</span> salió</span></div>${barsSVG(serie, { label: "Ingresos y gastos de los últimos 6 meses" })}</section>`;
+  // Últimos movimientos de todas las cuentas
+  const ult = movsList().filter((m) => m.fecha).sort((a, b) => (a.fecha < b.fecha ? 1 : -1)).slice(0, 5);
+  if (ult.length && actualMes(ym)) h += `<section class="card"><div class="cardhead"><h2>Últimos movimientos</h2><button class="linkbtn" data-act="sub" data-sub="movs">Ver cartola</button></div><div class="list">${ult.map((m) => movLi(m, { sub: [diaLabel(m.fecha), cuentaLabel(m.cuenta_id)].join(" · ") })).join("")}</div></section>`;
   // Cuentas
   const cs = Object.values(S.cuentas).filter((c) => !c.archivada).sort((a, b) => (a.orden ?? 9) - (b.orden ?? 9));
   h += `<section class="card"><div class="cardhead"><h2>Cuentas</h2><button class="linkbtn" data-act="sub" data-sub="cuentas">Editar saldos</button></div><div class="list">${cs.map((c) => {
@@ -406,6 +409,7 @@ function viewMes() {
   h += `<section class="card"><h2>Cartola de ${MES[+ym.slice(5) - 1]}</h2><p class="small muted">Resumen del mes con totales, categorías y todos los movimientos.</p><div class="btns"><button class="btn" data-act="exportar" data-fmt="pdf">Descargar PDF</button><button class="btn" data-act="exportar" data-fmt="xlsx">Descargar Excel</button></div></section>`;
   return h;
 }
+const actualMes = (ym) => ym === ymOf(today());
 function presTotal() { return roots("gasto").reduce((s, r) => s + (+r.presupuesto || 0), 0); }
 function proximos() {
   const hoy = today(), lim = addD(hoy, 40), out = [];
@@ -556,7 +560,7 @@ function viewMas() {
   const it = (sub, t, d) => `<button class="li" data-act="sub" data-sub="${sub}"><span class="t"><div>${t}</div><div class="tiny muted">${d}</div></span>${chev}</button>`;
   return `<section class="card"><div class="list">
     ${it("importar", "Importar cartola o captura", "Excel, CSV, PDF o fotos de la app del banco")}
-    ${it("movs", "Todos los movimientos", "Buscar y editar")}
+    ${it("movs", "Cartola", "Todos tus movimientos, de todas las cuentas")}
     ${it("revisar", "Ignorados y sin identificar", ignorados().length + " ignorados")}
     ${it("meta", "Meta de ahorro", (metaActiva() || {}).nombre || "Sin meta")}
     ${it("presupuesto", "Presupuesto", presTotal() ? fmt(presTotal()) + " al mes" : "Sin fijar")}
@@ -588,10 +592,31 @@ function viewRevisar() {
   <section class="card"><h2>Sin identificar</h2><p class="small muted">Sí cuentan como gasto. Si después te acuerdas de alguno, tócalo y cámbiale la categoría.</p>
     ${sinid.length ? `<div class="list">${sinid.map((m) => movLi(m)).join("")}</div>` : `<p class="empty">Nada por aquí.</p>`}</section>`;
 }
+function diaLabel(f) {
+  const d = dayDiff(f, today());
+  if (d === 0) return "Hoy"; if (d === 1) return "Ayer";
+  const dt = toDate(f); const w = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"][dt.getDay()];
+  return w.charAt(0).toUpperCase() + w.slice(1) + " " + fechaCorta(f) + (f.slice(0, 4) !== today().slice(0, 4) ? " " + f.slice(0, 4) : "");
+}
 function viewMovs() {
-  const q = L.norm(S.q || "");
-  const list = movsList().filter((m) => !q || L.norm(nombreMov(m) + " " + m.glosa + " " + catName(m.cat)).includes(q)).sort((a, b) => (a.fecha < b.fecha ? 1 : -1)).slice(0, 200);
-  return back() + `<p class="small muted">Toca cualquier movimiento para cambiarle la categoría, el nombre o dividirlo.</p><input type="search" id="movQ" placeholder="Buscar por nombre, glosa o categoría" value="${esc(S.q || "")}"><section class="card"><div class="list">${list.map((m) => movLi(m, { sub: [fechaCorta(m.fecha), cuentaLabel(m.cuenta_id), m.estado === "pendiente" ? "por clasificar" : m.estado === "interno" ? "entre mis cuentas" : m.estado === "ignorado" ? "ignorado" : catName(m.cat)].join(" · ") })).join("") || `<p class="empty">Nada por aquí.</p>`}</div></section><button class="btn" data-act="nuevoMov">Agregar movimiento a mano</button>`;
+  const q = L.norm(S.q || ""), fc = S.movCta || "", ft = S.movTipo || "";
+  let list = movsList().filter((m) => m.fecha &&
+    (!fc || m.cuenta_id === fc) &&
+    (!ft || (ft === "gastos" ? m.monto < 0 && activo(m) : ft === "ingresos" ? m.monto > 0 && activo(m) : ft === "pend" ? m.estado === "pendiente" : true)) &&
+    (!q || L.norm(nombreMov(m) + " " + m.glosa + " " + catName(m.cat) + " " + cuentaLabel(m.cuenta_id)).includes(q)));
+  list.sort((a, b) => (a.fecha < b.fecha ? 1 : a.fecha > b.fecha ? -1 : (b.importado || "") < (a.importado || "") ? -1 : 1));
+  const total = list.length; list = list.slice(0, S.movN || 150);
+  const cs = Object.values(S.cuentas).filter((c) => !c.archivada).sort((a, b) => (a.orden ?? 9) - (b.orden ?? 9));
+  const chip = (act, val, cur, label) => `<button class="chip" data-act="${act}" data-v="${val}" aria-pressed="${cur === val}">${label}</button>`;
+  let h = back() + `<input type="search" id="movQ" placeholder="Buscar por nombre, glosa, categoría o cuenta" value="${esc(S.q || "")}">
+    <div class="chips">${chip("movCta", "", fc, "Todas")}${cs.map((c) => chip("movCta", c.id, fc, esc(cuentaLabel(c.id)))).join("")}</div>
+    <div class="chips">${chip("movTipo", "", ft, "Todo")}${chip("movTipo", "gastos", ft, "Gastos")}${chip("movTipo", "ingresos", ft, "Ingresos")}${chip("movTipo", "pend", ft, "Por clasificar")}</div>`;
+  if (!list.length) return h + `<section class="card"><p class="empty">Nada por aquí.</p></section><button class="btn" data-act="nuevoMov">Agregar movimiento a mano</button>`;
+  const dias = []; list.forEach((m) => { const d = dias[dias.length - 1]; if (d && d.f === m.fecha) d.ms.push(m); else dias.push({ f: m.fecha, ms: [m] }); });
+  h += dias.map((d) => { const neto = d.ms.filter(activo).reduce((s, m) => s + clp(m), 0);
+    return `<section class="card" style="gap:0"><div class="row between" style="padding-bottom:6px"><b class="small">${diaLabel(d.f)}</b><span class="num small ${neto > 0 ? "in" : "muted"}">${neto ? fmt(neto, true) : ""}</span></div><div class="list">${d.ms.map((m) => movLi(m, { sub: [!fc ? cuentaLabel(m.cuenta_id) : "", m.origen === "wallet" ? "Wallet" : "", m.estado === "pendiente" ? "por clasificar" : m.estado === "interno" ? "entre mis cuentas" : m.estado === "ignorado" ? "ignorado" : catName(m.cat), m.cuotas ? `cuota ${m.cuotas.n} de ${m.cuotas.de}` : ""].filter(Boolean).join(" · ") })).join("")}</div></section>`; }).join("");
+  if (total > list.length) h += `<button class="btn" data-act="movMas">Ver más (${total - list.length})</button>`;
+  return h + `<button class="btn ghost" data-act="nuevoMov">Agregar movimiento a mano</button>`;
 }
 function metaActiva() { return Object.values(S.metas).find((m) => m.activa) || Object.values(S.metas)[0] || null; }
 function metaCalc(m) {
@@ -1027,7 +1052,7 @@ function sheetEditEstado() {
 
 /* ============ Render ============ */
 const TITLES = { mes: "Mi mes", gastos: "Gastos", bandeja: "Por clasificar", tarjeta: "Tarjeta", analisis: "Análisis", mas: "Más" };
-const SUBT = { importar: "Importar", meta: "Meta de ahorro", presupuesto: "Presupuesto", categorias: "Categorías", reglas: "Reglas", cuentas: "Cuentas", atajos: "Atajos", movs: "Movimientos", revisar: "Por revisar" };
+const SUBT = { importar: "Importar", meta: "Meta de ahorro", presupuesto: "Presupuesto", categorias: "Categorías", reglas: "Reglas", cuentas: "Cuentas", atajos: "Atajos", movs: "Cartola", revisar: "Por revisar" };
 function render() {
   const main = $("#main");
   $("header.top").hidden = !!S.needLogin;
@@ -1147,6 +1172,9 @@ const ACT = {
     if (r) { r.cat = sh.cat; save("reglas", r); } else save("reglas", { id: uid(), patron: pat, nombre: nombreMov(m), cat: sh.cat });
     S.sheet = null; toast((sh.ids.length + 1) + " movimientos cambiados"); render();
   },
+  movCta: (el) => { S.movCta = el.dataset.v; S.movN = 150; render(); },
+  movTipo: (el) => { S.movTipo = el.dataset.v; S.movN = 150; render(); },
+  movMas: () => { S.movN = (S.movN || 150) + 150; render(); },
   igualesNo: () => { S.sheet = null; toast("Guardado"); render(); },
   delMov: () => { if (!confirm("¿Borrar este movimiento?")) return; remove("mov", S.sheet.id); S.sheet = null; render(); },
 
@@ -1571,7 +1599,7 @@ if ("serviceWorker" in navigator && !DEMO) window.addEventListener("load", () =>
 
 /* ============ Aviso de versión nueva ============ */
 // version.json cambia con cada actualización; si no calza con la que está abierta, ofrece recargar
-const VERSION = "2026-11-04.8";
+const VERSION = "2026-11-04.9";
 const ssGet = (k) => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
 const ssSet = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} };
 let ultimaRevision = 0;
