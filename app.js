@@ -1464,4 +1464,24 @@ if (!DEMO) {
   }
 }
 if ("serviceWorker" in navigator && !DEMO) window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+
+/* ============ Aviso de versión nueva ============ */
+// version.json cambia con cada actualización; si no calza con la que está abierta, ofrece recargar
+const VERSION = "2026-11-04.2";
+async function revisarVersion() {
+  if (DEMO || !navigator.onLine) return;
+  try {
+    const r = await fetch("version.json?t=" + Date.now(), { cache: "no-store" }); if (!r.ok) return;
+    const v = (await r.json()).v;
+    if (v && v !== VERSION && !$("#updBanner")) {
+      const b = document.createElement("div"); b.id = "updBanner"; b.className = "banner acc";
+      b.style.cssText = "position:fixed;left:16px;right:16px;bottom:calc(86px + env(safe-area-inset-bottom,0px));z-index:30;max-width:528px;margin:0 auto;box-shadow:0 4px 16px rgba(0,0,0,.15)";
+      b.innerHTML = '<div class="grow small"><b>Hay una versión nueva de la app.</b></div><button class="btn sm primary" id="updBtn">Actualizar</button>';
+      document.body.appendChild(b);
+      $("#updBtn").onclick = async () => { await flush(); try { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); } catch (e) {} location.reload(); };
+    }
+  } catch (e) {}
+}
+setTimeout(revisarVersion, 3000);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") revisarVersion(); });
 })();

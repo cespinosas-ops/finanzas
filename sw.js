@@ -1,5 +1,5 @@
 // Guarda la app en el teléfono para que abra aunque no haya señal.
-const CACHE = "finanzas-v4";
+const CACHE = "finanzas-v5";
 const SHELL = ["./", "index.html", "app.js", "lectores.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png", "icon-maskable.png"];
 const CDN = [
   "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js",
@@ -20,7 +20,7 @@ self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
-  if (url.hostname.endsWith("supabase.co")) return; // datos siempre en vivo
+  if (url.hostname.endsWith("supabase.co") || url.pathname.endsWith("version.json")) return; // datos y versión siempre en vivo
   const propio = url.origin === location.origin;
   if (req.mode === "navigate" || (propio && /\.(js|html)$/.test(url.pathname))) {
     // la app: primero internet (para tener la última versión), si no hay, la guardada
