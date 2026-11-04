@@ -197,22 +197,7 @@ const catNoSe = (m) => (m.monto > 0 ? "ingresos.sinid" : esTransf(m) ? "transf.s
 const ignorados = () => movsList().filter((m) => m.estado === "ignorado").sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
 const pendientes = () => movsList().filter((m) => m.estado === "pendiente").sort((a, b) => (a.fecha < b.fecha ? -1 : 1));
 
-function totales(ym) {
-  let gasto = 0, ingreso = 0; const porRoot = {}, porSub = {};
-  for (const m of movsMes(ym)) {
-    if (!activo(m)) continue;
-    for (const p of partes(m)) {
-      const t = tipoParte(p, m);
-      if (t === "gasto") {
-        const v = -p.monto; gasto += v;
-        const r = p.cat ? rootOf(p.cat) : "_pend";
-        porRoot[r] = (porRoot[r] || 0) + v;
-        if (p.cat) porSub[p.cat] = (porSub[p.cat] || 0) + v;
-      } else if (t === "ingreso") ingreso += p.monto;
-    }
-  }
-  return { gasto, ingreso, neto: ingreso - gasto, porRoot, porSub };
-}
+function totales(ym) { return totalesEn(ym + "-01", finMes(ym)); }
 // Gasto de un conjunto de categorías por mes, para los gráficos.
 function serieCat(filter, n) {
   const out = [];
@@ -376,14 +361,14 @@ function movLi(m, opt) {
 function viewMes() {
   const ym = S.mes, t = totales(ym), pend = pendientes();
   const alerts = roots("gasto").filter((r) => r.presupuesto && (t.porRoot[r.id] || 0) >= r.presupuesto * (S.aj.aviso1 || 80) / 100);
-  const serie = []; for (let i = 5; i >= 0; i--) { const m = addM(ym, -i), x = totales(m); serie.push({ l: mesCorto(m), a: x.ingreso, b: x.gasto, hl: i === 0 }); }
+
   let h = monthNav();
   h += `<section class="card"><div class="eyebrow">Gastaste</div><div class="big">${fmt(t.gasto)}</div>
     <div class="kpis"><div class="kpi"><span class="tiny muted">Entró</span><b class="in">${fmt(t.ingreso)}</b></div><div class="kpi"><span class="tiny muted">${t.neto < 0 ? "Faltó" : "Sobró"}</span><b class="${t.neto < 0 ? "bad" : "in"}">${fmt(t.neto)}</b></div><div class="kpi"><span class="tiny muted">Presupuesto</span><b>${presTotal() ? pct(t.gasto - (t.porRoot._pend || 0), presTotal()) + "%" : "sin fijar"}</b></div></div></section>`;
   if (S.capturas.length) h += `<div class="banner acc"><div class="grow">Llegó ${S.capturas.length === 1 ? "una captura" : S.capturas.length + " capturas"} desde el Atajo.</div><button class="btn sm" data-act="abrirCaptura">Revisar</button></div>`;
   if (pend.length) h += `<button class="banner acc" style="border:0;text-align:left" data-act="tab" data-tab="bandeja"><div class="grow"><b>${pend.length} ${pend.length === 1 ? "movimiento" : "movimientos"} por clasificar.</b> <span class="small">Mientras, cuentan como "Por clasificar".</span></div>${chev}</button>`;
   for (const r of alerts) { const v = t.porRoot[r.id] || 0; const over = v >= r.presupuesto; h += `<div class="banner" style="${over ? "background:var(--bad-soft)" : ""}"><div class="grow">${over ? "Te pasaste" : "Vas en el " + pct(v, r.presupuesto) + "%"} del presupuesto de <b>${esc(r.nombre)}</b>: ${fmt(v)} de ${fmt(r.presupuesto)}.</div></div>`; }
-  h += `<section class="card"><div class="cardhead"><h2>Entra versus sale</h2><span class="tiny muted"><span style="color:var(--accent)">■</span> entró <span style="color:var(--bad)">■</span> salió</span></div>${barsSVG(serie, { label: "Ingresos y gastos de los últimos 6 meses" })}</section>`;
+  h += `<section class="card"><div class="cardhead"><h2>Entra versus sale</h2><span class="tiny muted"><span style="color:var(--accent)">■</span> entró <span style="color:var(--bad)">■</span> salió</span></div>${barsScroll(serieMeses(), { dos: true, label: "Ingresos y gastos por mes" })}</section>`;
   // Últimos movimientos de todas las cuentas
   const ult = movsList().filter((m) => m.fecha).sort((a, b) => (a.fecha < b.fecha ? 1 : -1)).slice(0, 5);
   if (ult.length && actualMes(ym)) h += `<section class="card"><div class="cardhead"><h2>Últimos movimientos</h2><button class="linkbtn" data-act="sub" data-sub="movs">Ver cartola</button></div><div class="list">${ult.map((m) => movLi(m, { sub: [diaLabel(m.fecha), cuentaLabel(m.cuenta_id)].join(" · ") })).join("")}</div></section>`;
@@ -434,9 +419,64 @@ function viewLoQueViene() {
 }
 
 /* Gastos con doble click */
+/* Periodo para Gastos: un mes, el año o todo lo que hay */
+function rangoGastos() {
+  const p = S.per || "mes", y = S.mes.slice(0, 4);
+  if (p === "anio") { const d0 = ymOf(primerDato() || today()), ini = d0 > y + "-01" ? d0 : y + "-01"; return { p, desde: y + "-01-01", hasta: y + "-12-31", label: "en " + y, meses: mesesEntre(ini, y === today().slice(0, 4) ? ymOf(today()) : y + "-12") }; }
+  if (p === "todo") { const d0 = primerDato() || today(); return { p, desde: d0, hasta: today(), label: "desde " + mesLabel(ymOf(d0)), meses: mesesEntre(ymOf(d0), ymOf(today())) }; }
+  return { p, desde: S.mes + "-01", hasta: finMes(S.mes), label: "en " + MES[+S.mes.slice(5) - 1], meses: 1 };
+}
+function mesesEntre(a, b) { let n = 0; for (let ym = a; ym <= b; ym = addM(ym, 1)) n++; return Math.max(1, n); }
+const movsEn = (d, h) => movsList().filter((m) => m.fecha && m.fecha >= d && m.fecha <= h);
+function totalesEn(desde, hasta) {
+  let gasto = 0, ingreso = 0; const porRoot = {}, porSub = {};
+  for (const m of movsEn(desde, hasta)) {
+    if (!activo(m)) continue;
+    for (const p of partes(m)) {
+      const t = tipoParte(p, m);
+      if (t === "gasto") { const v = -p.monto; gasto += v; const r = p.cat ? rootOf(p.cat) : "_pend"; porRoot[r] = (porRoot[r] || 0) + v; if (p.cat) porSub[p.cat] = (porSub[p.cat] || 0) + v; }
+      else if (t === "ingreso") ingreso += p.monto;
+    }
+  }
+  return { gasto, ingreso, neto: ingreso - gasto, porRoot, porSub };
+}
+/* Todos los meses con datos (mínimo 6), con gasto e ingreso según un filtro, en una sola pasada */
+function serieMeses(filter) {
+  const fin = ymOf(today()); const d0 = primerDato();
+  let ini = d0 ? ymOf(d0) : fin; if (addM(fin, -5) < ini) ini = addM(fin, -5);
+  const map = {};
+  for (const m of movsList()) {
+    if (!activo(m) || !m.fecha) continue; const k = ymOf(m.fecha);
+    for (const p of partes(m)) { const t = tipoParte(p, m); if (filter && !filter(p, m)) continue; const o = (map[k] = map[k] || { a: 0, b: 0 }); if (t === "gasto") o.a += -p.monto; else if (t === "ingreso") o.b += p.monto; }
+  }
+  const out = []; for (let ym = ini; ym <= fin; ym = addM(ym, 1)) out.push({ ym, a: (map[ym] || {}).a || 0, b: (map[ym] || {}).b || 0 });
+  return out;
+}
+/* Barras que se deslizan hacia el lado; tocar una barra cambia el mes */
+function barsScroll(serie, o) {
+  o = o || {};
+  const R = o.rango || { p: "mes" }, y = S.mes.slice(0, 4);
+  const max = Math.max(1, ...serie.map((d) => (o.dos ? Math.max(d.a, d.b) : d.a)));
+  const px = (v) => Math.max(v > 0 ? 3 : 0, Math.round((96 * v) / max));
+  return `<div class="bscroll" data-bscroll role="group" aria-label="${esc(o.label || "Meses")}"><div class="bcols">${serie.map((d, i) => {
+    const sel = R.p === "todo" || (R.p === "anio" ? d.ym.startsWith(y) : d.ym === S.mes), foco = R.p === "mes" && d.ym === S.mes;
+    const anio = i === 0 || d.ym.endsWith("-01");
+    return `<button class="bcol${sel ? " sel" : ""}${foco ? " foco" : ""}" data-act="selMes" data-ym="${d.ym}" aria-label="${mesLabel(d.ym)}">
+      <span class="bv">${o.dos ? "" : d.a ? fmtK(d.a) : ""}</span>
+      <span class="bwrap">${o.dos ? `<span class="bbar" style="height:${px(d.b)}px;background:var(--accent)"></span><span class="bbar" style="height:${px(d.a)}px;background:var(--bad)"></span>` : `<span class="bbar" style="height:${px(d.a)}px;background:${o.col || "var(--accent)"}"></span>`}</span>
+      <span class="bl">${mesCorto(d.ym)}${anio ? `<i>${d.ym.slice(2, 4)}</i>` : ""}</span></button>`; }).join("")}</div></div>`;
+}
+function perNav(R) {
+  const seg = `<div class="seg">${[["mes", "Mes"], ["anio", "Año"], ["todo", "Todo"]].map(([k, l]) => `<button data-act="per" data-k="${k}" aria-pressed="${R.p === k}">${l}</button>`).join("")}</div>`;
+  if (R.p === "mes") return seg + monthNav();
+  if (R.p === "anio") { const y = +S.mes.slice(0, 4), d0 = +(primerDato() || today()).slice(0, 4); return seg + `<div class="monthnav"><button class="btn ghost icon" data-act="anio" data-n="-1" aria-label="Año anterior" ${y <= d0 ? "disabled" : ""}>‹</button><b>${y}</b><button class="btn ghost icon" data-act="anio" data-n="1" aria-label="Año siguiente" ${y >= +today().slice(0, 4) ? "disabled" : ""}>›</button></div>`; }
+  return seg;
+}
 function viewGastos() {
-  const ym = S.mes, t = totales(ym), [rid, sid, lugar] = S.drill;
-  let h = monthNav();
+  const R = rangoGastos(), t = totalesEn(R.desde, R.hasta), [rid, sid, lugar] = S.drill;
+  const prom = (v) => (R.p !== "mes" && R.meses > 1 ? `<div class="small muted">Promedio ${fmt(v / R.meses)} al mes</div>` : "");
+  const pres = R.p === "mes";
+  let h = perNav(R);
   if (S.drill.length) {
     const parts = [`<button data-act="drill" data-path="">Todo</button>`];
     if (rid) parts.push(sid || lugar ? `<button data-act="drill" data-path="${rid}">${esc(catName(rid))}</button>` : `<span>${esc(catName(rid))}</span>`);
@@ -446,35 +486,36 @@ function viewGastos() {
   }
   if (!rid) {
     const rs = roots("gasto").map((r) => ({ r, v: t.porRoot[r.id] || 0 })).sort((a, b) => b.v - a.v);
-    h += `<section class="card"><div class="eyebrow">Total gastado</div><div class="big">${fmt(t.gasto)}</div>${barsSVG(serieCat(() => true, 6).map((d, i) => Object.assign(d, { hl: i === 5 })), { label: "Gasto total por mes" })}</section>`;
+    h += `<section class="card"><div class="eyebrow">Total gastado ${esc(R.label)}</div><div class="big">${fmt(t.gasto)}</div>${prom(t.gasto)}${barsScroll(serieMeses(), { rango: R, label: "Gasto por mes" })}<p class="tiny muted">Desliza hacia el lado para ver otros meses y toca una barra para abrirlo.</p></section>`;
     h += `<section class="card"><div class="list">`;
     if (t.porRoot._pend) h += `<button class="li" data-act="tab" data-tab="bandeja"><span class="dot" style="background:var(--line)"></span><span class="t"><div>Por clasificar</div></span><span class="num">${fmt(t.porRoot._pend)}</span>${chev}</button>`;
-    h += rs.map(({ r, v }) => `<button class="li" data-act="drill" data-path="${r.id}" style="flex-wrap:wrap"><span class="dot" style="background:${r.color}"></span><span class="t"><div>${esc(r.nombre)}</div><div class="tiny muted">${t.gasto ? pct(v, t.gasto) + "% del total" : ""}${r.presupuesto ? " · presupuesto " + fmt(r.presupuesto) : ""}</div></span><span class="num">${fmt(v)}</span>${chev}${r.presupuesto ? `<div style="flex-basis:100%">${budgetBar(v, r.presupuesto)}</div>` : ""}</button>`).join("");
+    h += rs.filter((x) => x.v || (pres && x.r.presupuesto)).map(({ r, v }) => `<button class="li" data-act="drill" data-path="${r.id}" style="flex-wrap:wrap"><span class="dot" style="background:${r.color}"></span><span class="t"><div>${esc(r.nombre)}</div><div class="tiny muted">${t.gasto ? pct(v, t.gasto) + "% del total" : ""}${pres && r.presupuesto ? " · presupuesto " + fmt(r.presupuesto) : ""}${!pres && R.meses > 1 ? " · " + fmtK(v / R.meses) + " al mes" : ""}</div></span><span class="num">${fmt(v)}</span>${chev}${pres && r.presupuesto ? `<div style="flex-basis:100%">${budgetBar(v, r.presupuesto)}</div>` : ""}</button>`).join("") || `<p class="empty">Sin gastos en este periodo.</p>`;
     return h + `</div></section>`;
   }
   const r = S.cat[rid]; if (!r) { S.drill = []; return viewGastos(); }
   if (!sid) {
     const v = t.porRoot[rid] || 0;
-    h += `<section class="card"><div class="row between"><div><div class="eyebrow">${esc(r.nombre)}</div><div class="big">${fmt(v)}</div></div>${r.presupuesto ? ringSVG(v / r.presupuesto, v > r.presupuesto ? "var(--bad)" : r.color) : ""}</div>${r.presupuesto ? `<p class="small muted">${v > r.presupuesto ? "Te pasaste por " + fmt(v - r.presupuesto) : "Te quedan " + fmt(r.presupuesto - v)} del presupuesto de ${fmt(r.presupuesto)}.</p>` : ""}${barsSVG(serieCat((p) => p.cat && rootOf(p.cat) === rid, 6).map((d, i) => Object.assign(d, { c: r.color, hl: i === 5 })), { label: "Gasto en " + r.nombre })}</section>`;
+    h += `<section class="card"><div class="row between"><div><div class="eyebrow">${esc(r.nombre)} ${esc(R.label)}</div><div class="big">${fmt(v)}</div>${prom(v)}</div>${pres && r.presupuesto ? ringSVG(v / r.presupuesto, v > r.presupuesto ? "var(--bad)" : r.color) : ""}</div>${pres && r.presupuesto ? `<p class="small muted">${v > r.presupuesto ? "Te pasaste por " + fmt(v - r.presupuesto) : "Te quedan " + fmt(r.presupuesto - v)} del presupuesto de ${fmt(r.presupuesto)}.</p>` : ""}${barsScroll(serieMeses((p) => p.cat && rootOf(p.cat) === rid), { rango: R, col: r.color, label: "Gasto en " + r.nombre })}</section>`;
     const subs = subsOf(rid).map((s) => ({ s, v: t.porSub[s.id] || 0 }));
     const gen = t.porSub[rid] || 0;
-    h += `<section class="card"><div class="list">${subs.sort((a, b) => b.v - a.v).map(({ s, v }) => `<button class="li" data-act="drill" data-path="${rid}|${s.id}"><span class="t"><div>${esc(s.nombre)}</div>${s.presupuesto ? `<div class="tiny muted">presupuesto ${fmt(s.presupuesto)}</div>` : ""}</span><span class="num">${fmt(v)}</span>${chev}</button>`).join("")}${gen ? `<button class="li" data-act="drill" data-path="${rid}|${rid}"><span class="t"><div>General</div><div class="tiny muted">sin subcategoría</div></span><span class="num">${fmt(gen)}</span>${chev}</button>` : ""}</div></section>`;
+    h += `<section class="card"><div class="list">${subs.sort((a, b) => b.v - a.v).map(({ s, v }) => `<button class="li" data-act="drill" data-path="${rid}|${s.id}"><span class="t"><div>${esc(s.nombre)}</div>${pres && s.presupuesto ? `<div class="tiny muted">presupuesto ${fmt(s.presupuesto)}</div>` : ""}</span><span class="num">${fmt(v)}</span>${chev}</button>`).join("")}${gen ? `<button class="li" data-act="drill" data-path="${rid}|${rid}"><span class="t"><div>General</div><div class="tiny muted">sin subcategoría</div></span><span class="num">${fmt(gen)}</span>${chev}</button>` : ""}</div></section>`;
     return h;
   }
   const filt = (p) => p.cat === sid;
-  const compras = movsMes(ym).filter((m) => activo(m) && partes(m).some(filt)).sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+  const compras = movsEn(R.desde, R.hasta).filter((m) => activo(m) && partes(m).some(filt)).sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
   const montoEn = (m) => partes(m).filter(filt).reduce((s, p) => s - p.monto, 0);
   if (!lugar) {
     const g = {}; compras.forEach((m) => { const k = nombreMov(m); g[k] = g[k] || { n: 0, v: 0 }; g[k].n++; g[k].v += montoEn(m); });
     const total = compras.reduce((s, m) => s + montoEn(m), 0);
-    h += `<section class="card"><div class="eyebrow">${esc(sid === rid ? r.nombre + " general" : catName(sid))}</div><div class="big">${fmt(total)}</div><div class="small muted">${compras.length} ${compras.length === 1 ? "compra" : "compras"} en ${MES[+ym.slice(5) - 1]}</div>${barsSVG(serieCat(filt, 6).map((d, i) => Object.assign(d, { c: r.color, hl: i === 5 })), { label: "Gasto por mes" })}</section>`;
-    h += `<section class="card"><h2>Lugares</h2><div class="list">${Object.entries(g).sort((a, b) => b[1].v - a[1].v).map(([k, x]) => `<button class="li" data-act="drill" data-path="${rid}|${sid}|${esc(k)}"><span class="t"><div>${esc(k)}</div><div class="tiny muted">${x.n} ${x.n === 1 ? "vez" : "veces"}</div></span><span class="num">${fmt(x.v)}</span>${chev}</button>`).join("") || `<p class="empty">Sin compras este mes.</p>`}</div></section>`;
-    h += `<section class="card"><h2>Cada compra</h2><div class="list">${compras.map((m) => movLi(m)).join("") || `<p class="empty">Sin compras este mes.</p>`}</div></section>`;
+    h += `<section class="card"><div class="eyebrow">${esc(sid === rid ? r.nombre + " general" : catName(sid))}</div><div class="big">${fmt(total)}</div><div class="small muted">${compras.length} ${compras.length === 1 ? "compra" : "compras"} ${esc(R.label)}</div>${prom(total)}${barsScroll(serieMeses(filt), { rango: R, col: r.color, label: "Gasto por mes" })}</section>`;
+    h += `<section class="card"><h2>Lugares</h2><div class="list">${Object.entries(g).sort((a, b) => b[1].v - a[1].v).map(([k, x]) => `<button class="li" data-act="drill" data-path="${rid}|${sid}|${esc(k)}"><span class="t"><div>${esc(k)}</div><div class="tiny muted">${x.n} ${x.n === 1 ? "vez" : "veces"}</div></span><span class="num">${fmt(x.v)}</span>${chev}</button>`).join("") || `<p class="empty">Sin compras en este periodo.</p>`}</div></section>`;
+    h += `<section class="card"><h2>Cada compra</h2><div class="list">${compras.slice(0, 200).map((m) => movLi(m)).join("") || `<p class="empty">Sin compras en este periodo.</p>`}</div></section>`;
     return h;
   }
   const todas = movsList().filter((m) => activo(m) && nombreMov(m) === lugar && partes(m).some(filt)).sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
-  const tot = todas.reduce((s, m) => s + montoEn(m), 0);
-  h += `<section class="card"><div class="eyebrow">${esc(lugar)}</div><div class="big">${fmt(tot)}</div><div class="kpis"><div class="kpi"><span class="tiny muted">Veces</span><b>${todas.length}</b></div><div class="kpi"><span class="tiny muted">Promedio</span><b>${fmt(todas.length ? tot / todas.length : 0)}</b></div><div class="kpi"><span class="tiny muted">Última</span><b>${todas[0] ? fechaCorta(todas[0].fecha) : ""}</b></div></div>${barsSVG(serieCat((p, m) => filt(p) && nombreMov(m) === lugar, 6).map((d, i) => Object.assign(d, { c: r.color, hl: i === 5 })), { label: "Gasto en " + lugar })}</section>`;
+  const enR = todas.filter((m) => m.fecha >= R.desde && m.fecha <= R.hasta);
+  const tot = enR.reduce((s, m) => s + montoEn(m), 0);
+  h += `<section class="card"><div class="eyebrow">${esc(lugar)} ${esc(R.label)}</div><div class="big">${fmt(tot)}</div><div class="kpis"><div class="kpi"><span class="tiny muted">Veces</span><b>${enR.length}</b></div><div class="kpi"><span class="tiny muted">Promedio</span><b>${fmt(enR.length ? tot / enR.length : 0)}</b></div><div class="kpi"><span class="tiny muted">Última</span><b>${todas[0] ? fechaCorta(todas[0].fecha) : ""}</b></div></div>${barsScroll(serieMeses((p, m) => filt(p) && nombreMov(m) === lugar), { rango: R, col: r.color, label: "Gasto en " + lugar })}</section>`;
   h += `<section class="card"><h2>Todas las veces</h2><div class="list">${todas.map((m) => movLi(m)).join("")}</div></section>`;
   return h;
 }
@@ -1066,6 +1107,7 @@ function render() {
   const V = { mes: viewMes, gastos: viewGastos, bandeja: viewBandeja, tarjeta: viewTarjeta, analisis: viewAnalisis, mas: viewMas }[S.tab] || viewMes;
   main.innerHTML = V();
   $("#overlay").innerHTML = sheetHtml();
+  document.querySelectorAll("[data-bscroll]").forEach((el) => { const f = el.querySelector(".bcol.foco") || [...el.querySelectorAll(".bcol.sel")].pop(); el.scrollLeft = f ? f.offsetLeft - el.clientWidth / 2 + f.offsetWidth / 2 : el.scrollWidth; });
   const q = $("#movQ"); if (q) q.oninput = () => { S.q = q.value; const pos = q.selectionStart; render(); const n2 = $("#movQ"); n2.focus(); try { n2.setSelectionRange(pos, pos); } catch (e) {} };
   syncUI();
 }
@@ -1086,6 +1128,9 @@ const ACT = {
   login: async () => { if (!sb) return; const redirect = location.origin + location.pathname; const { error } = await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: redirect, queryParams: { prompt: "select_account" } } }); if (error) $("#loginMsg").textContent = "No se pudo abrir Google: " + error.message; },
   logout: async () => { await flush(); if (Object.keys(outbox).length) { toast("Hay cambios sin subir. Conéctate antes de salir."); return; } await sb.auth.signOut(); LS.set("fin.cache", null); location.reload(); },
   tcSel: (el) => { S.tcSel = el.dataset.id; render(); },
+  selMes: (el) => { S.mes = el.dataset.ym; S.per = "mes"; render(); },
+  per: (el) => { S.per = el.dataset.k; render(); },
+  anio: (el) => { let ym = addM(S.mes, 12 * +el.dataset.n); if (ym > ymOf(today())) ym = ymOf(today()); S.mes = ym; render(); },
   an: (el) => { S.an = el.dataset.k; if (S.tab !== "analisis") S.tab = "analisis"; render(); window.scrollTo(0, 0); },
   umbralH: (el) => { S.aj.hormiga = +el.dataset.v; save("aj", S.aj); render(); },
   anPer: (el) => { S.anPer = el.dataset.k; render(); },
@@ -1599,7 +1644,7 @@ if ("serviceWorker" in navigator && !DEMO) window.addEventListener("load", () =>
 
 /* ============ Aviso de versión nueva ============ */
 // version.json cambia con cada actualización; si no calza con la que está abierta, ofrece recargar
-const VERSION = "2026-11-04.9";
+const VERSION = "2026-11-04.10";
 const ssGet = (k) => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
 const ssSet = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} };
 let ultimaRevision = 0;
